@@ -36,4 +36,5 @@ Place all downloaded data files in a `data/` folder at the same level as the fig
 
 ## Contact
 
-Bokai Zhu — bz263@cornell.edu
+Brooke Howitt bhowitt@stanford.edu
+Sizun Jiang sjiang3@bidmc.harvard.edu
