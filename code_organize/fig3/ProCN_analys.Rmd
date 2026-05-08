@@ -1,0 +1,198 @@
+---
+title: "ProCN_bkAnlys"
+output: html_document
+---
+
+
+```{r}
+dfrna = read.csv('../data/RNA_meta_final.csv')
+#dfrna <- dfrna[!is.na(dfrna$MS), ] # not considering ones without a MS group
+
+###
+rna_cn = read.csv('../data/RNA_CN_zscores.csv')
+dfrna$CN = rna_cn$CN
+fov_info = read.csv('../../../fig2_related/analy/data/FOV_ann.csv')
+colnames(fov_info) = c('tma_fov', 'BH_ann')
+dfrna = merge(x = dfrna, y = fov_info, by = "tma_fov", all.x = TRUE)
+dfrna = subset(dfrna, dfrna$BH_ann == 'Tumor')
+###
+
+dfrna$group = 'p53_WT'
+dfrna$group[dfrna$MS == 'p53'] = 'p53_abn'
+```
+
+
+```{r}
+### this part was not actually used that much
+# install.packages(c("dplyr","ggplot2","ggpubr","rstatix"))
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(rstatix)
+
+dfrna <- dfrna %>%
+  mutate(across(c(cluster_composition, tma_fov, group), as.character))
+
+df_pct <- dfrna %>%
+  count(tma_fov, cluster_composition) %>%
+  group_by(tma_fov) %>%
+  mutate(percent = n / sum(n) * 100) %>%
+  ungroup() %>%
+  left_join(dfrna %>% distinct(tma_fov, group), by = "tma_fov")
+
+valid_clusters <- df_pct %>%
+  distinct(tma_fov, cluster_composition, group) %>%
+  count(cluster_composition, group) %>%
+  group_by(cluster_composition) %>%
+  filter(n_distinct(group) == 2, min(n) >= 2) %>%
+  pull(cluster_composition)
+
+stat_test <- df_pct %>%
+  filter(cluster_composition %in% valid_clusters) %>%
+  group_by(cluster_composition) %>%
+  wilcox_test(percent ~ group) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj") %>%
+  add_xy_position(x = "cluster_composition", dodge = 0.75)
+
+```
+
+
+
+######### cluster version (both FOV and CNs)??
+
+```{r}
+library(tibble)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(viridis)
+library(scales)
+
+# 3) Cluster the CN axis (rows)
+cn_wide <- df_pct %>%
+  select(cluster_composition, tma_fov, percent) %>%
+  pivot_wider(names_from  = tma_fov,
+              values_from = percent,
+              values_fill  = list(percent = 0))
+cn_mat <- as.matrix(cn_wide[,-1])
+rownames(cn_mat) <- cn_wide$cluster_composition
+cn_ord <- rownames(cn_mat)[hclust(dist(cn_mat))$order]
+
+# 4) (Optional) Cluster the FOV axis globally (columns)
+fov_wide <- df_pct %>%
+  select(tma_fov, cluster_composition, percent) %>%
+  pivot_wider(names_from  = cluster_composition,
+              values_from = percent,
+              values_fill  = list(percent = 0))
+fov_mat <- as.matrix(fov_wide[,-1])
+rownames(fov_mat) <- fov_wide$tma_fov
+fov_ord <- rownames(fov_mat)[hclust(dist(fov_mat))$order]
+
+# 5) Apply those new factor levels
+df_plot <- df_pct %>%
+  mutate(
+    cluster_composition = factor(cluster_composition, levels = cn_ord),
+    tma_fov            = factor(tma_fov,            levels = fov_ord)
+  )
+
+## non colored version
+ggplot(df_plot,
+       aes(x = tma_fov, y = cluster_composition,
+           size = percent, fill = cluster_composition)) +
+  geom_point(shape = 21, colour = "grey30", alpha = 0.8) +
+  facet_wrap(~ group, scales = "free_x", nrow = 1) +
+  scale_size_area(max_size = 12,
+                  guide = guide_legend(title = "% per FOV")) +
+  scale_fill_viridis(discrete = TRUE, name = "CN") +
+  labs(
+    x     = "FOV",
+    y     = "Copy-Number cluster",
+    title = "Per-FOV CN composition (clustered axes)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    strip.text  = element_text(face = "bold", size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid  = element_blank()
+  )
+
+```
+
+
+### more refined and colored version
+
+```{r}
+cccd <- c(
+  "#e31a1c", "#6a3d9a", "#009900", "#00cccc", "#ccff00",
+  "#ff6699", "#7f007f", "#ff7f00", "#660000", "#006d2c",
+  "#1f78b4", "#b2df8a", "#a6cee3", "#ffff99", "#cab2d6"
+)
+names(cccd) <- as.character(0:14)
+
+ggplot(df_plot,
+       aes(x = tma_fov, y = cluster_composition,
+           size = percent, fill = cluster_composition)) +
+  geom_point(shape = 21, colour = "grey30", alpha = 0.8) +
+  facet_wrap(~ group, scales = "free_x", nrow = 1) +
+  scale_size_area(max_size = 12,
+                  guide = guide_legend(title = "% per FOV")) +
+  scale_fill_manual(values = cccd, name = "CN") +
+  labs(x = "FOV", y = "Copy-Number cluster",
+       title = "Per-FOV CN composition") +
+  theme_minimal(base_size = 14) +
+  theme(
+    strip.text         = element_text(face = "bold", size = 16),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    panel.grid.major   = element_line(color = "grey90", size = 0.3),
+    panel.grid.minor   = element_blank(),
+    panel.spacing.x    = unit(1, "cm"),
+    aspect.ratio     = 0.5
+  )
+
+ggsave('../plots/bubble_freqCN_RNA.svg', width = 15, height = 8)
+
+```
+
+
+
+```{r}
+fov_wide <- df_pct %>%
+  select(tma_fov, cluster_composition, percent) %>%
+  pivot_wider(
+    names_from  = cluster_composition,
+    values_from = percent,
+    values_fill = list(percent = 0)
+  )
+fov_mat <- as.matrix(fov_wide[ , -1])
+rownames(fov_mat) <- fov_wide$tma_fov
+
+fov_ord <- rownames(fov_mat)[ hclust(dist(fov_mat))$order ]
+
+df_plot <- df_pct %>%
+  mutate(
+    # apply new FOV order
+    tma_fov = factor(tma_fov, levels = fov_ord),
+    # keep CNs in numeric order (0,1,2,…)
+    cluster_composition = factor(cluster_composition,
+                                 levels = as.character(sort(as.numeric(unique(cluster_composition)))))
+  )
+
+ggplot(df_plot,
+       aes(x = tma_fov, y = cluster_composition,
+           size = percent, fill = cluster_composition)) +
+  geom_point(shape = 21, colour = "grey30", alpha = 0.8) +
+  facet_wrap(~ group, scales = "free_x", nrow = 1) +
+  scale_size_area(max_size = 12, guide = guide_legend(title = "% per FOV")) +
+  scale_fill_viridis(discrete = TRUE, name = "CN") +
+  labs(x = "FOV",
+       y = "Copy-Number cluster",
+       title = "Per-FOV CN composition (FOVs clustered only)") +
+  theme_minimal(base_size = 14) +
+  theme(
+    strip.text  = element_text(face = "bold", size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid  = element_blank()
+  )
+```

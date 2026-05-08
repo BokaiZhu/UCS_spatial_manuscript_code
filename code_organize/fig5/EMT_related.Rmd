@@ -1,0 +1,265 @@
+
+Gene list found here: https://aacrjournals.org/clincancerres/article/19/1/279/77766/An-Epithelial-Mesenchymal-Transition-Gene
+
+For EMT scoring of UCS
+
+Method described in https://www.nature.com/articles/s41467-019-12985-x (PC1 of the genes)
+
+```{r}
+library(Seurat)
+library(dplyr)
+seurat_obj = readRDS("../fig2_related/analy/data/uter_seurat_simp_2025.rds")
+
+## this is the EMT genes
+emt76 <- c(
+  "ZEB1","LAMB3","VIL2","ANXA2","MMP2","ITGA2","FN1","PDPN",
+  "TGFBI","PLAU","FOSL2","GPNMB","SERPINB5","HMMR","ITGB5","COL1A1",
+  "COL3A1","COL5A2","RCN2","GJA1","EMP3","ADAM12","KRT7","KRT19",
+  "CDH2","CXCL1","CXCL2","CXCL3","CXCL5","CXCL6","CXCL8","LIF",
+  "MUC1","MUC4","MUC16","SPARC","IGFBP7","PODXL","EDN1","S100A10",
+  "S100A11","KRT14","KRT17","SLC1A3","CXADR","TACSTD2","LGALS3BP","COL1A2",
+  "COL5A1","COL6A1","COL6A2","COL6A3","THBS1","THBS2","THBS3","VIM",
+  "DCN","EPHA2","FBN1","FSTL3","GPC1","IGFBP4","ITGA5","LOX",
+  "MMP1","MMP14","POSTN","PTX3","TAGLN","TFPI1","TGM2","TIMP3",
+  "TNFAIP6","VCAN"
+)
+
+genes_in_obj <- rownames(seurat_obj)
+emt_present <- intersect(emt76, genes_in_obj)
+length(emt_present) # out of the 76 genes 42 in our cosmx data gene panel
+## missing genes
+setdiff(emt76, emt_present)
+
+mat <- GetAssayData(seurat_obj, assay = "RNA", slot = "data")[emt_present, ]
+mat <- t(mat) 
+pc <- prcomp(mat, center = TRUE, scale. = TRUE)
+emt_pc1 <- pc$x[, 1]
+
+mes_markers <- intersect(
+  c("VIM","FN1","ITGA5","COL1A1","COL3A1","ZEB1"),
+  emt_present
+)
+
+if (length(mes_markers) > 0) {
+  mat_mes <- GetAssayData(seurat_obj, assay = "RNA", slot = "data")[mes_markers, , drop = FALSE]
+  mes_mean <- Matrix::colMeans(mat_mes)
+  if (cor(emt_pc1, mes_mean, use = "complete.obs") < 0) {
+    emt_pc1 <- -emt_pc1
+  }
+}
+
+cor(emt_pc1, mes_mean) #0.7888808 positive correlation
+```
+
+
+```{r}
+# -----------------------------
+# 1. Configuration & Data Prep
+# -----------------------------
+k <- 3
+macro_label <- "Macrophage/DC"
+tumor_keep <- c("Ambiguous", "Sarcoma", "Carcinoma", "Undif Carci")
+col_p53 <- c("p53 wt" = "#D08C28", "p53 alt" = "#2A8C6E")
+
+# -----------------------------
+# 2. Define Mutually Exclusive Macrophage Groups
+# -----------------------------
+macro_cells <- which(seurat_obj$annV7_noNum == macro_label)
+expr_mat <- GetAssayData(seurat_obj, assay = "RNA", slot = "data")[c("SPP1", "IGF2", "IGFBP5"), macro_cells]
+
+spp1_val <- expr_mat["SPP1", ]
+igf_val  <- colMeans(expr_mat[c("IGF2", "IGFBP5"), ])
+
+# Create the classification: Assign NA to cells we don't want to use as spatial anchors
+macro_meta <- data.frame(
+  cell_id = colnames(expr_mat),
+  spp1_expr = spp1_val,
+  igf_expr = igf_val
+) %>%
+  mutate(
+    class = case_when(
+      spp1_expr > 0  & igf_expr == 0 ~ "SPP1_only",
+      spp1_expr == 0 & igf_expr > 0  ~ "IGF_only",
+      TRUE                           ~ NA_character_ # Removes Double Pos and Double Neg
+    )
+  )
+
+macro_group_map <- setNames(macro_meta$class, macro_meta$cell_id)
+
+# -----------------------------
+# 3. Update Metadata (Fixed Vector Length Issue)
+# -----------------------------
+
+# 1. Attach EMT_PC1 to the object metadata first so it stays synced during filtering
+seurat_obj$EMT_PC1_internal <- emt_pc1
+
+meta_base <- seurat_obj@meta.data %>%
+  # 2. NOW filter out p53 NAs
+  filter(!is.na(MS)) %>% 
+  transmute(
+    EMT_PC1   = EMT_PC1_internal, # Pulling from the synced column
+    TMA_FOV   = TMA_FOV,
+    cell_type = annV7_noNum,
+    x_coord   = cent_X,
+    y_coord   = cent_Y,
+    MS        = MS,
+    cell_id   = rownames(.)
+  ) %>%
+  mutate(
+    mph_group = macro_group_map[cell_id],
+    # Refined p53 grouping
+    p53_grp   = if_else(MS == "p53", "p53 alt", "p53 wt"),
+    p53_grp   = factor(p53_grp, levels = c("p53 wt", "p53 alt"))
+  ) %>%
+  # 3. Remove any remaining p53 NAs (e.g. if MS was something other than 'p53' or 'wt')
+  filter(!is.na(p53_grp))
+
+# -----------------------------
+# 4. Spatial KNN & Building Result Tables
+# -----------------------------
+process_res_clean <- function(target) {
+  dist_col_name <- paste0("dist_to_", target)
+  
+  res <- meta_base %>%
+    group_by(TMA_FOV) %>%
+    group_modify(function(df_fov, ...) {
+      tumor <- df_fov %>% filter(cell_type %in% tumor_keep)
+      # Only use the pure subtype of macrophages as reference
+      macro_sub <- df_fov %>% filter(cell_type == macro_label, mph_group == target)
+      
+      if (nrow(tumor) == 0) return(tumor)
+      if (nrow(macro_sub) < k) {
+        tumor[[dist_col_name]] <- NA_real_
+        return(tumor)
+      }
+      
+      knn <- FNN::get.knnx(
+        data  = as.matrix(macro_sub[, c("x_coord", "y_coord")]),
+        query = as.matrix(tumor[, c("x_coord", "y_coord")]),
+        k = k
+      )
+      tumor[[dist_col_name]] <- rowMeans(knn$nn.dist)
+      return(tumor)
+    }) %>%
+    ungroup() %>%
+    # Collapse Carcinoma types
+    mutate(tumor_type_v2 = if_else(cell_type %in% c("Carcinoma", "Undif Carci"), "Carcinoma", cell_type)) %>%
+    filter(tumor_type_v2 %in% c("Ambiguous", "Carcinoma", "Sarcoma")) %>%
+    mutate(tumor_type_v2 = factor(tumor_type_v2, levels = c("Ambiguous", "Carcinoma", "Sarcoma")))
+  
+  return(res)
+}
+
+res_spp1 <- process_res_clean("SPP1_only")
+res_igf  <- process_res_clean("IGF_only")
+
+# -----------------------------
+# 5. Plotting Function
+# -----------------------------
+make_exclusive_plot <- function(df, dist_col, title) {
+  df$current_dist <- df[[dist_col]]
+  
+  plot_df <- df %>%
+    filter(is.finite(current_dist), is.finite(EMT_PC1))
+  
+  ggplot(plot_df, aes(x = current_dist, y = EMT_PC1)) +
+    geom_point(aes(color = p53_grp), shape = 16, size = 0.20, alpha = 0.18) +
+    geom_smooth(method = "lm", color = "#666666", linewidth = 0.6, se = FALSE) +
+    facet_grid(p53_grp ~ tumor_type_v2) +
+    scale_color_manual(values = col_p53, guide = "none") +
+    theme_classic(base_size = 11) +
+    theme(
+      strip.background = element_rect(fill = "white", color = "grey20", linewidth = 0.6),
+      strip.text       = element_text(size = 10, face = "bold"),
+      axis.title       = element_text(size = 11),
+      axis.text        = element_text(size = 9, color = "grey20"),
+      axis.line        = element_line(color = "grey20", linewidth = 0.5),
+      plot.title       = element_text(size = 12, face = "bold", hjust = 0.5),
+      panel.spacing    = unit(0.7, "lines")
+    ) +
+    labs(title = title, x = paste0("Mean distance to ", k, " nearest macrophages"), y = "Single-cell EMT score (PC1)")
+}
+
+# -----------------------------
+# 6. Final Execution
+# -----------------------------
+library(ggplot2)
+p1 <- make_exclusive_plot(res_spp1, "dist_to_SPP1_only", "SPP1+ / IGF- Macrophages")
+p2 <- make_exclusive_plot(res_igf, "dist_to_IGF_only", "IGF+ / SPP1- Macrophages")
+
+p_final <- p1 | p2
+
+ggsave("EMT_Spatial_Exclusive_NoNA2.png", p_final, width = 16, height = 5, dpi = 300)
+p_final
+```
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+# 1. Prepare Macrophage-specific Data
+macro_idx <- which(seurat_obj$annV7_noNum == macro_label)
+macro_meta <- seurat_obj@meta.data[macro_idx, ]
+
+expr_mat <- GetAssayData(seurat_obj, assay = "RNA", slot = "data")[c("SPP1", "IGF2", "IGFBP5"), macro_idx]
+macro_meta$SPP1_expr <- as.numeric(expr_mat["SPP1", ])
+macro_meta$IGF_score <- as.numeric(colMeans(expr_mat[c("IGF2", "IGFBP5"), ]))
+
+# Use the mutually exclusive grouping from your analysis
+macro_meta <- macro_meta %>%
+  mutate(
+    category = case_when(
+      SPP1_expr > 0  & IGF_score == 0 ~ "SPP1+ / IGF-",
+      SPP1_expr == 0 & IGF_score > 0  ~ "IGF+ / SPP1-",
+      SPP1_expr > 0  & IGF_score > 0  ~ "Double Positive",
+      TRUE                             ~ "Double Negative"
+    ),
+    category = factor(category, levels = c("SPP1+ / IGF-", "IGF+ / SPP1-", "Double Positive", "Double Negative"))
+  )
+
+# 2. Scatter Plot
+p_scatter <- ggplot(macro_meta, aes(x = SPP1_expr, y = IGF_score)) +
+  geom_point(aes(color = category), alpha = 0.5, size = 1) +
+  scale_color_manual(values = c(
+    "SPP1+ / IGF-"    = "#E41A1C",
+    "IGF+ / SPP1-"    = "#377EB8",
+    "Double Positive"  = "#984EA3",
+    "Double Negative"  = "#999999"
+  )) +
+  theme_classic() +
+  labs(
+    title = "Macrophage Expression: SPP1 vs IGF2/BP5",
+    x = "SPP1 Expression", y = "IGF2/BP5 Mean Expression",
+    color = "Group",
+    subtitle = paste0("Pearson R: ", round(cor(macro_meta$SPP1_expr, macro_meta$IGF_score), 2))
+  )
+
+# 3. Bar Plot
+p_overlap <- ggplot(macro_meta, aes(x = category, fill = category)) +
+  geom_bar() +
+  scale_fill_manual(values = c(
+    "SPP1+ / IGF-"    = "#E41A1C",
+    "IGF+ / SPP1-"    = "#377EB8",
+    "Double Positive"  = "#984EA3",
+    "Double Negative"  = "#999999"
+  )) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none") +
+  labs(title = "Macrophage Population Overlap", x = "", y = "Cell Count")
+
+p_combined <- p_scatter + p_overlap
+
+ggsave(
+  filename = "./sanitycheck_IGF2BPF5_SPP1_MPHpop.png",
+  plot = p_combined,
+  width = 12,
+  height = 5,
+  dpi = 300
+)
+p_combined
+```
+
+
+

@@ -1,0 +1,84 @@
+---
+title: "clusterRNA_v3"
+output: html_document
+---
+
+
+```{r}
+template = read.csv("/home/bkzhu/smi_tap/data/raw/7_forBK_reseg_extraction/transcripts_template.csv")
+
+## looks good proceed
+library(readr)
+library(harmony)
+
+## tma4
+list_csv_files <- list.files(path = "/home/bkzhu/smi_tap/data/raw/7_forBK_reseg_extraction/TMA4/")
+files = paste0('/home/bkzhu/smi_tap/data/raw/7_forBK_reseg_extraction/TMA4/', list_csv_files)
+df <- readr::read_csv(files, id = "file_name", col_names = FALSE)
+dftma4 = df
+dftma4$tma = "4"
+
+## tma6
+list_csv_files <- list.files(path = "/home/bkzhu/smi_tap/data/raw/7_forBK_reseg_extraction/TMA6/")
+files = paste0('/home/bkzhu/smi_tap/data/raw/7_forBK_reseg_extraction/TMA6/', list_csv_files)
+df <- readr::read_csv(files, id = "file_name", col_names = FALSE)
+dftma6 = df
+dftma6$tma = "6"
+
+## tma7
+list_csv_files <- list.files(path = "/home/bkzhu/smi_tap/data/raw/7_forBK_reseg_extraction/TMA7/")
+files = paste0('/home/bkzhu/smi_tap/data/raw/7_forBK_reseg_extraction/TMA7/', list_csv_files)
+df <- readr::read_csv(files, id = "file_name", col_names = FALSE)
+dftma7 = df
+dftma7$tma = "7"
+
+df_467 = do.call("rbind",list(dftma4,dftma6,dftma7)) # 286,217
+df_467$file_name <- NULL
+colnames(df_467) = c(colnames(template),"tma")
+
+# clean up format
+df_467_meta = df_467[,c(1:12,992)]
+df_467_count = df_467[,c(13:991)]
+rownames(df_467_count) = paste0("cell",c(1:nrow(df_467_count)))
+rownames(df_467_meta) = paste0("cell",c(1:nrow(df_467_meta)))
+df_467_meta$tma_fov = paste0(df_467_meta$tma,"_",df_467_meta$fov)
+
+temp_count = df_467_count[,]
+rownames(temp_count) = paste0("cell",c(1:nrow(temp_count)))
+temp_meta = df_467_meta[,]
+rownames(temp_meta) = paste0("cell",c(1:nrow(temp_meta)))
+
+library(Seurat)
+smitap_full_obj <- CreateSeuratObject(counts = t(temp_count))
+smitap_full_obj@meta.data = cbind(smitap_full_obj@meta.data,temp_meta)
+smitap_full_obj <- subset(smitap_full_obj, subset = nCount_RNA > 20 & nCount_RNA < 3000 &
+                     nFeature_RNA > 10 & nFeature_RNA < 600)
+# 286,217 --> 254,022 cells after filtering
+smitap_full_obj <- NormalizeData(smitap_full_obj,normalization.method = "RC", scale.factor = 1000) # total norm + no log1p
+smitap_full_obj <- ScaleData(smitap_full_obj) # standard scale
+## this takes long time since 250k cells, took ~5min
+#smitap_obj<- FindVariableFeatures(smitap_obj, nfeatures = 300)
+smitap_full_obj <- RunPCA(smitap_full_obj, features = rownames(smitap_full_obj))
+smitap_full_obj <- RunHarmony(smitap_full_obj, group.by.vars = "tma",assay.use = "RNA", npc = 30)
+
+smitap_full_obj <- FindNeighbors(smitap_full_obj, reduction = "harmony", dims = 1:30)
+smitap_full_obj <- FindClusters(smitap_full_obj, resolution = 0.5)
+smitap_full_obj <- RunUMAP(smitap_full_obj, reduction = "harmony", dims = 1:30)
+
+p  = DimPlot(smitap_full_obj, reduction = "umap",raster=TRUE, pt.size = 0.3, label = TRUE)
+#ggsave("/home/bkzhu/smi_tap/plot/full_harmony_cluster.png",p, width = 10, height = 10)
+p
+
+temp_meta2 = temp_meta[colnames(smitap_full_obj),]
+smitap_full_obj@meta.data$tma_fov = temp_meta2$tma_fov
+smitap_full_obj@meta.data$tma = temp_meta2$tma
+p = DimPlot(smitap_full_obj, reduction = "umap", group.by = "tma",raster=TRUE, pt.size = 0.3)
+#ggsave("/home/bkzhu/smi_tap/plot/full_harmony_tma.png",p, width = 10, height = 10)
+p
+
+p = DimPlot(smitap_full_obj, reduction = "umap", group.by = "seurat_clusters",raster=TRUE, pt.size = 0.3, label = T)
+#ggsave("/home/bkzhu/smi_tap/plot/v3_clustering.png",p, width = 10, height = 10)
+p
+```
+
+## obtained clusters were then annotated by experts in UCS field; one dirty cluster was removed.

@@ -1,0 +1,162 @@
+---
+title: "CD4T_cNMF_analysis"
+output: html_document
+---
+
+
+```{r}
+library(Seurat)
+seurat_obj = readRDS("../../../fig2_related/analy/data/uter_seurat_simp_2025.rds")
+index_mph = read.csv('../data/milo_mphdc_ann.csv')
+
+## do  NSMP vs p53
+seurat_obj2 = subset(seurat_obj, subset = acc != '15167') #no info
+seurat_obj2@meta.data$MS2 = seurat_obj2@meta.data$MS
+seurat_obj2@meta.data$MS2[seurat_obj2@meta.data$MS2!= 'p53'] = 'non_p53'
+seurat_obj2@meta.data$type = 'Other'
+seurat_obj2@meta.data$type[seurat_obj2@meta.data$annV7_noNum == 'Macrophage/DC'] = 'Other Mph/DC'
+seurat_obj2@meta.data$type[index_mph$index[index_mph$type == 'p53_h']] = 'p53_h'
+seurat_obj2@meta.data$type[index_mph$index[index_mph$type == 'p53_l']] = 'p53_l'
+
+## macropahge subset
+seurat_mph = subset(seurat_obj2, annV7_noNum == 'Macrophage/DC')
+seurat_mph <- RunUMAP(
+  seurat_mph, 
+  reduction = "harmony", 
+  dims = 1:30, 
+  #umap.method = "uwot", 
+  n.neighbors = 15,     # try lower or higher values
+  min.dist = 0.5        # try 0.01–0.5 (lower = more "trajectory-like")
+)
+DimPlot(seurat_mph, reduction = "umap", group.by = "type")
+```
+
+
+####
+## read in gene list
+
+```{r}
+stp_sig = readRDS('../data/macrophage_signature.RDS') # this is the file that contains all the gene signatures per momac verse cluster
+# article this one: https://www.sciencedirect.com/science/article/pii/S1074761321002934
+
+overlap_stats <- sapply(stp_sig, function(gene_list) {
+  total_genes <- length(gene_list)
+  overlap_genes <- intersect(gene_list, rownames(seurat_mph))
+  n_overlap <- length(overlap_genes)
+  list(
+    total = total_genes,
+    overlap = n_overlap
+  )
+})
+
+overlap_stats
+```
+
+#### run module scoring for the genes
+## only showing the ones with significant change between groups
+
+```{r}
+library(purrr)
+
+gene_sets <- map(stp_sig, ~ intersect(.x, rownames(seurat_mph)))
+keep_genesets <- c("MoMac_VERSE_cluster_4", "MoMac_VERSE_cluster_13", 'MoMac_VERSE_cluster_3',
+                   "SPP1-Mac", 'NLRP3-Mac')
+gene_sets_filtered <- gene_sets[
+  names(gene_sets) %in% keep_genesets
+]
+
+seurat_mph <- AddModuleScore(
+  object   = seurat_mph,
+  features = gene_sets_filtered,
+  name     = "MoMac_VERSE_",
+  ctrl     = 5
+)
+```
+
+```{r}
+# Extract the names of your gene sets
+gene_set_names <- names(gene_sets_filtered)
+
+# Get the names created by AddModuleScore (exclude _CTRL)
+module_cols <- grep("^MoMac_VERSE_", colnames(seurat_mph@meta.data), value = TRUE)
+module_cols <- module_cols[!grepl("CTRL", module_cols)]
+
+# Rename
+colnames(seurat_mph@meta.data)[match(module_cols, colnames(seurat_mph@meta.data))] <- gene_set_names
+```
+
+```{r}
+library(Seurat)
+library(patchwork)
+
+# All module-score columns = the names of your gene sets
+mod_cols <- names(gene_sets_filtered)
+mod_cols
+```
+
+```{r}
+seurat_mph$MS3 <- seurat_mph$MS2
+seurat_mph$MS3[seurat_mph$MS2 == "p53"]     <- "p53_abn"
+seurat_mph$MS3[seurat_mph$MS2 == "non_p53"] <- "p53_WT"
+seurat_mph$MS3 <- factor(seurat_mph$MS3, levels = c("p53_abn", "p53_WT"))
+
+meta <- seurat_mph@meta.data
+df_fov <- meta %>%
+  filter(!is.na(MS3), MS3 %in% c("p53_abn", "p53_WT")) %>%
+  group_by(tma_fov, MS3) %>%
+  summarise(
+    across(all_of(mod_cols), ~ mean(.x, na.rm = TRUE)),
+    n_cells = n(),
+    .groups = "drop"
+  )
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+
+## make sure grouping column is a factor with right order
+df_fov$MS3 <- factor(df_fov$MS3, levels = c("p53_abn", "p53_WT"))
+
+plot_list <- lapply(mod_cols, function(feat) {
+  df_feat <- df_fov %>%
+    select(tma_fov, MS3, !!!syms(c(feat)))
+
+  # Wilcoxon on FOV means
+  w <- wilcox.test(df_feat[[feat]] ~ df_feat$MS3)
+  pval <- w$p.value
+  p_lab <- if (pval < 1e-3) {
+    paste0("p = ", formatC(pval, format = "e", digits = 1))
+  } else {
+    paste0("p = ", signif(pval, 2))
+  }
+
+  ymin <- min(df_feat[[feat]], na.rm = TRUE)
+  ymax <- max(df_feat[[feat]], na.rm = TRUE)
+  label_y <- ymax + 0.12 * (ymax - ymin)
+
+  ggplot(df_feat, aes(x = MS3, y = .data[[feat]], fill = MS3)) +
+    geom_violin(trim = FALSE, alpha = 0.6) +
+    geom_boxplot(width = 0.15, outlier.shape = NA) +
+    geom_jitter(width = 0.1, alpha = 0.8, size = 1) +  # each point = one FOV
+    annotate("text", x = 1.5, y = label_y, label = p_lab, size = 3) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.25))) +
+    labs(x = NULL, y = "module score (FOV mean)", title = feat) +
+    theme_classic(base_size = 9) +
+    theme(
+      legend.position = "none",
+      axis.text.x  = element_text(angle = 45, hjust = 1),
+      plot.title   = element_text(size = 9)
+    )+
+    scale_fill_manual(values = c(
+    "p53_abn" = "#C44E52",   # red
+    "p53_WT"  = "#4C72B0"    # blue
+  ))
+})
+
+wrap_plots(plot_list, ncol = 5)
+ggsave('../plots/mph_steph_scores_FOV_pseudobulkV2.png', height = 3, width = 15)
+ggsave('../plots/mph_steph_scores_FOV_pseudobulkV2.svg', height = 3, width = 15)
+```
+

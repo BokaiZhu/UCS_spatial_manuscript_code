@@ -1,0 +1,99 @@
+---
+title: "freq_celltype_FOV"
+output: html_document
+---
+
+First read maxfuse results (maxfuse process was done in the python script)
+
+```{r}
+# this is only the embeddings
+max_pro = read.csv('../data/maxfuse1_pro.csv')
+max_rna = read.csv('../data/maxfuse1_rna.csv')
+max_id = read.csv('../data/maxfuse1_matchid.csv')
+```
+
+## for eazyness we randomly selecet 100,000 in each modality to plot
+```{r}
+set.seed(42)
+proid = sample(nrow(max_pro), 100000)
+rnaid = sample(nrow(max_rna), 100000)
+
+umapuse = rbind(max_rna[rnaid,c(1:10)], max_pro[proid,c(1:10)])
+
+library(Seurat)
+umap_obj = CreateSeuratObject(counts = t(umapuse))
+umap_obj = SetAssayData(umap_obj, new.data = t(umapuse), slot = 'data')
+umap_obj = ScaleData(umap_obj)
+#umap_obj = RunPCA(umap_obj, features = rownames(umap_obj))
+#ElbowPlot(umap_obj, ndims = 10)
+umap_obj <- RunUMAP(umap_obj, features =  rownames(umap_obj))
+
+## make the labels ready
+mod = c(rep('rna', 100000), rep('pro', 100000))
+umap_obj@meta.data$mod = mod
+pp = DimPlot(umap_obj, reduction = "umap", group.by = 'mod', raster=FALSE, pt.size = 0.1) #+ 
+ggsave("../plot/umap_maxfuse_mod_0627.png", pp,height = 10, width = 10.5)
+pp
+```
+
+####### custom plotting
+
+```{r}
+df_umap = as.data.frame(umap_obj@reductions$umap@cell.embeddings)
+df_umap$mod = mod
+
+rnameta = read.csv('../data/rna_maxinput_meta.csv')
+prometa = read.csv('../data/pro_maxinput_swap.csv')
+
+labelsrna = as.character(rnameta$annV7_noNum)
+labelspro = as.character(prometa$phenoShort_swap[max_id$id2+1])
+labels_orig = unlist(c(labelsrna[rnaid], labelspro[proid]))
+df_umap$celltype = labels_orig
+```
+
+```{r}
+df_umap_sub = subset(df_umap, df_umap$celltype %notin% c('Undif Carci', 'Other'))
+
+pro_cc = c('#4363d8',
+'#800000',
+'#3cb44b',
+'#000075',
+'#ffe119',
+'#46f0f0',
+'#911eb4',
+'#e6beff',
+'#ffd8b1',
+'#008080')
+names(pro_cc) = c("Ambiguous",
+                  "Benign Endometrial gland",
+                  "Benign Stroma",
+                  "Carcinoma",
+                  "Endothelial",
+                  "Macrophage/DC",
+                  "Myometrium",
+                  "Plasma/B",
+                  "Sarcoma",
+                  "T")
+
+p1 = ggplot(df_umap_sub)  + 
+  geom_point(aes(x=UMAP_1, y=UMAP_2, color=celltype,size = 1,stroke = 0), cex = 0.6) +
+  labs( x = "umap 1", y = "umap 2") + theme_classic() + ggtitle("rna") +
+  scale_color_manual(values = pro_cc)
+ggsave("../plot/umap_max_0626_type.png",p1,height = 6, width = 8)
+p1
+```
+
+# different coloring groups
+```{r}
+p1 = ggplot(df_umap_sub)  + 
+  geom_point(aes(x=UMAP_1, y=UMAP_2, color=mod, size = 1,stroke = 0, alpha = 0.5), cex = 0.6) +
+  labs( x = "umap 1", y = "umap 2") + theme_classic() + ggtitle("rna") +
+  scale_color_manual(values = c('#00A4CCFF', '#F95700FF'))
+ggsave("../plot/umap_max_0626_mod.png",p1,height = 6, width = 6.5)
+p1
+```
+
+
+
+
+

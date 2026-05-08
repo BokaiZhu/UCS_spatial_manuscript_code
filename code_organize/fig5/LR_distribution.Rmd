@@ -1,0 +1,305 @@
+---
+title: "commot score plotting bar"
+output: html_document
+---
+
+```{r}
+df_cms = read.csv('../data/commotScores_spp1.csv')
+df_cms = subset(df_cms, df_cms$acc != '15167')
+
+df_cms$group = df_cms$MS
+df_cms$group[df_cms$MS!= 'p53'] = 'non_p53'
+
+df_cms = subset(df_cms, df_cms$annV7_noNum == 'Macrophage/DC')
+df_cms$sumSR = (df_cms$s.SPP1)
+
+# Ensure 'cn' is a factor for color mapping
+df_cms$cn <- as.factor(df_cms$cn)
+table(df_cms$group, df_cms$cn)
+```
+
+```{r}
+library(dplyr)
+library(rstatix)  # for wilcox_effsize()
+
+wilcox_table <- df_cms %>%
+  group_by(cn) %>%
+  summarise(
+    p_value = tryCatch(
+      wilcox.test(sumSR ~ group, exact = FALSE)$p.value,
+      error = function(e) NA_real_
+    ),
+    n_control = sum(group == "p53"),
+    n_disease = sum(group == "non_p53"),
+    median_control = mean(sumSR[group == "p53"], na.rm = TRUE),
+    median_disease = mean(sumSR[group == "non_p53"], na.rm = TRUE),
+    effect_size = tryCatch(
+      wilcox_effsize(data.frame(group, sumSR), sumSR ~ group)$effsize,
+      error = function(e) NA_real_
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(p_adj = p.adjust(p_value, method = "fdr")) %>%
+  arrange(p_adj)
+View(wilcox_table)
+```
+
+
+
+########## some testing below
+
+```{r}
+library(ggridges)
+df_cms$cn_plot <- as.character(df_cms$cn)
+df_cms$cn_plot[!df_cms$cn_plot %in% c("4", "8", "9")] <- "other"
+
+# Define global x-limits (quantile trimmed)
+xlims <- quantile(df_cms$sumSR, probs = c(0.1, 0.9), na.rm = TRUE)
+
+# Plot
+plots <- df_cms %>%
+  split(.$cn_plot) %>%
+  lapply(function(df) {
+    # Calculate group medians for this CN
+    medians <- aggregate(sumSR ~ group, data = df, mean)
+
+    ggplot(df, aes(x = sumSR, fill = group, color = group)) +
+      geom_density(alpha = 0.3, position = "identity") +
+      # Median lines for each group
+      geom_vline(data = medians, aes(xintercept = sumSR, color = group),
+                 linetype = "dashed", linewidth = 0.7) +
+      scale_color_manual(values = c("non_p53" = "#E64B35", "p53" = "#547AA5")) +
+      scale_fill_manual(values = c("non_p53" = "#E64B35", "p53" = "#547AA5")) +
+      coord_cartesian(xlim = xlims) +
+      theme_classic() +
+      ggtitle(paste("CN", unique(df$cn_plot))) +
+      theme(legend.position = "none",
+            plot.title = element_text(hjust = 0.5))
+  })
+
+library(patchwork)
+p = wrap_plots(plots, ncol = 2)
+ggsave('../plots/SPP1_lrscores_mph.svg', width = 6, height = 5)
+p
+```
+
+###########
+#######
+####
+
+################### give a quick try on IGF related
+
+```{r}
+df_cms = read.csv('../data/commotScores_igf2_wlabels.csv')
+df_cms = subset(df_cms, df_cms$acc != '15167')
+
+df_cms$group = df_cms$MS
+df_cms$group[df_cms$MS!= 'p53'] = 'non_p53'
+
+df_cms = subset(df_cms, df_cms$annV7_noNum == 'Macrophage/DC')
+df_cms$sumSR = (df_cms$s.IGF2.IGFBP5 + df_cms$r.IGF2.IGFBP5)/2
+
+# Ensure 'cn' is a factor for color mapping
+df_cms$cn <- as.factor(df_cms$cn)
+table(df_cms$group, df_cms$cn)
+```
+
+
+```{r}
+library(dplyr)
+library(rstatix)  # for wilcox_effsize()
+
+wilcox_table <- df_cms %>%
+  group_by(cn) %>%
+  summarise(
+    p_value = tryCatch(
+      wilcox.test(sumSR ~ group, exact = FALSE)$p.value,
+      error = function(e) NA_real_
+    ),
+    n_control = sum(group == "p53"),
+    n_disease = sum(group == "non_p53"),
+    median_control = mean(sumSR[group == "p53"], na.rm = TRUE),
+    median_disease = mean(sumSR[group == "non_p53"], na.rm = TRUE),
+    effect_size = tryCatch(
+      wilcox_effsize(data.frame(group, sumSR), sumSR ~ group)$effsize,
+      error = function(e) NA_real_
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(p_adj = p.adjust(p_value, method = "fdr")) %>%
+  arrange(p_adj)
+View(wilcox_table)
+```
+
+
+```{r}
+library(ggridges)
+df_cms$cn_plot <- as.character(df_cms$cn)
+df_cms$cn_plot[!df_cms$cn_plot %in% c("4", "8", "9")] <- "other"
+
+# Define global x-limits (quantile trimmed)
+xlims <- quantile(df_cms$sumSR, probs = c(0.01, 0.95), na.rm = TRUE)
+
+# Plot
+plots <- df_cms %>%
+  split(.$cn_plot) %>%
+  lapply(function(df) {
+    # Calculate group medians for this CN
+    medians <- aggregate(sumSR ~ group, data = df, mean)
+
+    ggplot(df, aes(x = sumSR, fill = group, color = group)) +
+      geom_density(alpha = 0.3, position = "identity") +
+      # Median lines for each group
+      geom_vline(data = medians, aes(xintercept = sumSR, color = group),
+                 linetype = "dashed", linewidth = 0.7) +
+      scale_color_manual(values = c("non_p53" = "#E64B35", "p53" = "#547AA5")) +
+      scale_fill_manual(values = c("non_p53" = "#E64B35", "p53" = "#547AA5")) +
+      coord_cartesian(xlim = xlims) +
+      theme_classic() +
+      ggtitle(paste("CN", unique(df$cn_plot))) +
+      theme(legend.position = "none",
+            plot.title = element_text(hjust = 0.5))
+  })
+
+library(patchwork)
+p = wrap_plots(plots, ncol = 2)
+ggsave('../plots/IGF2BP5_lrscores_mph.svg', width = 6, height = 5)
+p
+```
+
+
+```{r}
+df_cms$sum = (df_cms$s.IGF2.IGFBP5 + df_cms$r.IGF2.IGFBP5)
+
+df_sum <- df_cms %>%
+  group_by(tma_fov, annV7_noNum, group) %>%
+  summarise(sum_acc = mean(sum), .groups = 'drop')
+
+# Create the barplot with error bars
+df_sum = subset(df_sum, df_sum$annV7_noNum != 'Undif Carci')
+ggplot(df_sum, aes(x = annV7_noNum, y = sum_acc, pattern = group)) +
+  geom_boxplot(position = position_dodge(width = 0.8), outlier.shape = NA) +
+  theme_classic()+
+   ylim(c(0, 20)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#### now check what FOV as example to show?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### table to get effect size etc
+
+
+```{r}
+library(dplyr)
+library(rstatix)  # for wilcox_effsize()
+
+wilcox_table <- df_cms %>%
+  group_by(cn) %>%
+  summarise(
+    p_value = tryCatch(
+      wilcox.test(sumSR ~ group, exact = FALSE)$p.value,
+      error = function(e) NA_real_
+    ),
+    n_control = sum(group == "p53"),
+    n_disease = sum(group == "non_p53"),
+    median_control = mean(sumSR[group == "p53"], na.rm = TRUE),
+    median_disease = mean(sumSR[group == "non_p53"], na.rm = TRUE),
+    effect_size = tryCatch(
+      wilcox_effsize(data.frame(group, sumSR), sumSR ~ group)$effsize,
+      error = function(e) NA_real_
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(p_adj = p.adjust(p_value, method = "fdr")) %>%
+  arrange(p_adj)
+
+```
+
+
+
+################### violin at single cell
+
+
+```{r}
+library(dplyr)
+
+df_summary <- df_cms %>%
+  group_by(cn, group) %>%
+  summarise(
+    mean_sumSR = mean(sumSR, na.rm = TRUE),
+    sd_sumSR = sd(sumSR, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  )
+
+library(ggplot2)
+
+p <- ggplot(df_summary, aes(x = cn, y = mean_sumSR, fill = group)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8)) +
+  geom_errorbar(aes(ymin = mean_sumSR - sd_sumSR, ymax = mean_sumSR + sd_sumSR),
+                position = position_dodge(width = 0.8),
+                width = 0.2) +
+  #scale_fill_manual(values = c("control" = "#999999", "disease" = "#E41A1C")) +
+  theme_classic() +
+  ylab("Mean ± SD of sumSR") +
+  xlab("CN") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+p
+```
+

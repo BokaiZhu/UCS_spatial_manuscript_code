@@ -1,0 +1,304 @@
+---
+title: "clusterRNA_v3"
+output: html_document
+---
+
+
+```{r}
+template = read.csv("/home/bkzhu/smi_tap/data/raw/7_forBK_reseg_extraction/transcripts_template.csv")
+
+## looks good proceed
+library(readr)
+library(harmony)
+
+## tma4
+list_csv_files <- list.files(path = "/home/bkzhu/smi_tap/data/raw/7_forBK_reseg_extraction/TMA4/")
+files = paste0('/home/bkzhu/smi_tap/data/raw/7_forBK_reseg_extraction/TMA4/', list_csv_files)
+df <- readr::read_csv(files, id = "file_name", col_names = FALSE)
+dftma4 = df
+dftma4$tma = "4"
+
+## tma6
+list_csv_files <- list.files(path = "/home/bkzhu/smi_tap/data/raw/7_forBK_reseg_extraction/TMA6/")
+files = paste0('/home/bkzhu/smi_tap/data/raw/7_forBK_reseg_extraction/TMA6/', list_csv_files)
+df <- readr::read_csv(files, id = "file_name", col_names = FALSE)
+dftma6 = df
+dftma6$tma = "6"
+
+## tma7
+list_csv_files <- list.files(path = "/home/bkzhu/smi_tap/data/raw/7_forBK_reseg_extraction/TMA7/")
+files = paste0('/home/bkzhu/smi_tap/data/raw/7_forBK_reseg_extraction/TMA7/', list_csv_files)
+df <- readr::read_csv(files, id = "file_name", col_names = FALSE)
+dftma7 = df
+dftma7$tma = "7"
+
+df_467 = do.call("rbind",list(dftma4,dftma6,dftma7)) # 286,217
+df_467$file_name <- NULL
+colnames(df_467) = c(colnames(template),"tma")
+
+# clean up format
+df_467_meta = df_467[,c(1:12,992)]
+df_467_count = df_467[,c(13:991)]
+rownames(df_467_count) = paste0("cell",c(1:nrow(df_467_count)))
+rownames(df_467_meta) = paste0("cell",c(1:nrow(df_467_meta)))
+df_467_meta$tma_fov = paste0(df_467_meta$tma,"_",df_467_meta$fov)
+
+temp_count = df_467_count[,]
+rownames(temp_count) = paste0("cell",c(1:nrow(temp_count)))
+temp_meta = df_467_meta[,]
+rownames(temp_meta) = paste0("cell",c(1:nrow(temp_meta)))
+
+library(Seurat)
+smitap_full_obj <- CreateSeuratObject(counts = t(temp_count))
+smitap_full_obj@meta.data = cbind(smitap_full_obj@meta.data,temp_meta)
+smitap_full_obj <- subset(smitap_full_obj, subset = nCount_RNA > 20 & nCount_RNA < 3000 &
+                     nFeature_RNA > 10 & nFeature_RNA < 600)
+# 286,217 --> 254,022 cells after filtering
+smitap_full_obj <- NormalizeData(smitap_full_obj,normalization.method = "RC", scale.factor = 1000) # total norm + no log1p
+smitap_full_obj <- ScaleData(smitap_full_obj) # standard scale
+## this takes long time since 250k cells, took ~5min
+#smitap_obj<- FindVariableFeatures(smitap_obj, nfeatures = 300)
+smitap_full_obj <- RunPCA(smitap_full_obj, features = rownames(smitap_full_obj))
+smitap_full_obj <- RunHarmony(smitap_full_obj, group.by.vars = "tma",assay.use = "RNA", npc = 30)
+
+smitap_full_obj <- FindNeighbors(smitap_full_obj, reduction = "harmony", dims = 1:30)
+smitap_full_obj <- FindClusters(smitap_full_obj, reduction = "harmony", resolution = 0.5)
+smitap_full_obj <- RunUMAP(smitap_full_obj, reduction = "harmony", dims = 1:30)
+
+p  = DimPlot(smitap_full_obj, reduction = "umap",raster=TRUE, pt.size = 0.3, label = TRUE)
+#ggsave("/home/bkzhu/smi_tap/plot/full_harmony_cluster.png",p, width = 10, height = 10)
+p
+```
+
+```{r}
+temp_meta2 = temp_meta[colnames(smitap_full_obj),]
+smitap_full_obj@meta.data$tma_fov = temp_meta2$tma_fov
+smitap_full_obj@meta.data$tma = temp_meta2$tma
+p = DimPlot(smitap_full_obj, reduction = "umap", group.by = "tma",raster=TRUE, pt.size = 0.3)
+#ggsave("/home/bkzhu/smi_tap/plot/full_harmony_tma.png",p, width = 10, height = 10)
+p
+```
+
+```{r}
+p = DimPlot(smitap_full_obj, reduction = "umap", group.by = "seurat_clusters",raster=TRUE, pt.size = 0.3, label = T)
+#ggsave("/home/bkzhu/smi_tap/plot/v3_clustering.png",p, width = 10, height = 10)
+p
+```
+
+```{r}
+saveRDS(smitap_full_obj, '../../data/bk_v4_seurat_obj_jul12_2023.rds')
+```
+
+
+
+
+######### below is all the checking etc.
+
+
+
+
+
+
+0 und(stressed)-0
+1 epi(cdh1&esr1&pgr++)-1
+2 tumor(vim++)-2
+3 stromal-fibroblast-3
+4 stromal-muscle-4
+5 macrophage/dc-5
+6 epi-6
+7 epi(immune infiltrated)-7
+8 endothelial(twist1&vegfd++)-8
+9 tuomr/immune mix(CD36++)-9
+10 stromal-muscle-10
+11 endothelial-11
+12 epi-12
+13 plasma/b-13
+14 und-14
+15 und-15
+16 tcell-16
+17 und-17
+18 neuron?-18
+19 epi-19
+20 endothelial-20
+21 tumor(vim++)-21
+22 und-22
+23 und(CD24++)-23
+24 und(toss)-24
+25 und(toss)-25
+
+
+```{r}
+new.cluster.ids <- c(" und(stressed)-0", "epi(cdh1&esr1&pgr++)-1", "tumor(vim++)-2", "stromal-fibroblast-3", "stromal-muscle-4", "macrophage/dc-5",
+                     "epi-6","epi(immune infiltrated)-7","endothelial(twist1&vegfd++)-8","tuomr/immune mix(CD36++)-9","stromal-muscle-10","endothelial-11",
+                     "epi-12","plasma/b-13","und-14","und-15","tcell-16","und-17",
+                     "neuron?-18","epi-19","endothelial-20","tumor(vim++)-21","und-22","und(CD24++)-23",
+                     "und(toss)-24","und(toss)-25")
+names(new.cluster.ids) <- levels(smitap_full_obj)
+
+smitap_full_obj <- RenameIdents(smitap_full_obj, new.cluster.ids)
+
+p = DimPlot(smitap_full_obj, reduction = "umap", label = TRUE, pt.size = 0.3, raster=TRUE) + NoLegend()
+#ggsave("/home/bkzhu/smi_tap/plot/v3_r1_annotation.png",p, width = 15, height = 15)
+p
+```
+
+####### update the annotation
+
+```{r}
+smitap_v4_meta = smitap_full_obj@meta.data
+annV4 = as.character(smitap_v4_meta$seurat_clusters)
+
+# re-ann based on brooke's annotation
+annV4[annV4 == '0'] = "Carcinoma_0"
+annV4[annV4 == '1'] = "Carcinoma_1"
+annV4[annV4 == '2'] = "Sarcoma_2"
+annV4[annV4 == '3'] = "Stroma_needcheck_3"
+annV4[annV4 == '4'] = "Sarcoma_4"
+annV4[annV4 == '5'] = "Macrophage/DC_5"
+annV4[annV4 == '6'] = "Carcinoma_6"
+annV4[annV4 == '7'] = "Carcinoma_7"
+annV4[annV4 == '8'] = "Sarcoma_8"
+annV4[annV4 == '9'] = "Sarcoma_9"
+annV4[annV4 == '10'] = "Myometrium_10"
+annV4[annV4 == '11'] = "Endothelial_11"
+annV4[annV4 == '12'] = "Carcinoma_12"
+annV4[annV4 == '13'] = "Plasma/B_13"
+annV4[annV4 == '14'] = "Sarcoma_14"
+annV4[annV4 == '15'] = "Sarcoma_15"
+annV4[annV4 == '16'] = "T_16"
+annV4[annV4 == '17'] = "Sarcoma_17"
+annV4[annV4 == '18'] = "Carcinoma_18"
+annV4[annV4 == '19'] = "Carcinoma_19"
+annV4[annV4 == '20'] = "Carcinoma_20"
+annV4[annV4 == '21'] = "Sarcoma_21"
+annV4[annV4 == '22'] = "Carcinoma_22"
+annV4[annV4 == '23'] = "Carcinoma_23"
+annV4[annV4 == '24'] = "Carcinoma_24"
+annV4[annV4 == '25'] = "toss_25"
+
+## also annoation version for showing
+annV5 = annV4
+annV5[annV4 == 'toss_25'] = ""
+annV5[annV4 == 'Stroma_needcheck_3'] = "Stroma_3"
+
+smitap_full_obj@meta.data$annV4 = as.factor(annV4)
+smitap_full_obj@meta.data$annV5 = as.factor(annV5)
+```
+
+
+```{r}
+p = DimPlot(smitap_full_obj, reduction = "umap", group.by = "annV5",raster=TRUE, pt.size = 0.3, label = T) +
+  theme(legend.position = 'none')
+#ggsave("/home/bkzhu/smi_tap/plot/full_harmony_tma.png",p, width = 10, height = 10)
+p
+```
+
+
+```{r}
+library(RColorBrewer)
+n <- 26
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+col = sample(col_vector, n)
+
+levels(smitap_full_obj@meta.data$annV5) = levels(smitap_full_obj@meta.data$annV5)
+p = DimPlot(smitap_full_obj, reduction = "umap", group.by = "annV5",raster=F, pt.size = 0.3, label = T) +
+  theme(legend.position = 'none') + scale_color_manual(name = levels(as.factor(smitap_full_obj@meta.data$annV5)),
+                                                       values = col)
+ggsave("/home/bkzhu/smi_tap/plot/full_harmony_tma_annV5.png",p, width = 10, height = 10)
+p
+```
+
+
+
+############# subset tma or by fov
+
+
+```{r}
+smitap_full_obj_tma4 = subset(smitap_full_obj, subset = tma == 4)
+
+names(col) = levels(smitap_full_obj@meta.data$annV5)
+umap = as.data.frame(smitap_full_obj_tma4@reductions$umap@cell.embeddings)
+umap$ann5 = as.factor(smitap_full_obj_tma4@meta.data$annV5)
+levels(umap$ann5) = levels(smitap_full_obj@meta.data$annV5)
+p = ggplot(umap) + geom_point(aes(x = UMAP_1, y = UMAP_2, color = ann5), size = 0.5, stroke = 0.5) +
+  theme_classic() + theme(legend.position = "none") + 
+  scale_color_manual(values = col)
+ggsave("/home/bkzhu/smi_tap/plot/full_harmony_tma_annV5_tma4.png",p, width = 10, height = 10)
+p
+```
+
+
+```{r}
+smitap_full_obj_tma4 = subset(smitap_full_obj, subset = tma == 6)
+
+names(col) = levels(smitap_full_obj@meta.data$annV5)
+umap = as.data.frame(smitap_full_obj_tma4@reductions$umap@cell.embeddings)
+umap$ann5 = as.factor(smitap_full_obj_tma4@meta.data$annV5)
+levels(umap$ann5) = levels(smitap_full_obj@meta.data$annV5)
+p = ggplot(umap) + geom_point(aes(x = UMAP_1, y = UMAP_2, color = ann5), size = 0.5, stroke = 0.5) +
+  theme_classic() + theme(legend.position = "none") + 
+  scale_color_manual(values = col)
+ggsave("/home/bkzhu/smi_tap/plot/full_harmony_tma_annV5_tma6.png",p, width = 10, height = 10)
+p
+```
+
+
+
+```{r}
+smitap_full_obj_tma4 = subset(smitap_full_obj, subset = tma == 7)
+
+names(col) = levels(smitap_full_obj@meta.data$annV5)
+umap = as.data.frame(smitap_full_obj_tma4@reductions$umap@cell.embeddings)
+umap$ann5 = as.factor(smitap_full_obj_tma4@meta.data$annV5)
+levels(umap$ann5) = levels(smitap_full_obj@meta.data$annV5)
+p = ggplot(umap) + geom_point(aes(x = UMAP_1, y = UMAP_2, color = ann5), size = 0.5, stroke = 0.5) +
+  theme_classic() + theme(legend.position = "none") + 
+  scale_color_manual(values = col)
+ggsave("/home/bkzhu/smi_tap/plot/full_harmony_tma_annV5_tma7.png",p, width = 10, height = 10)
+p
+```
+
+
+```{r}
+temp_meta = smitap_full_obj@meta.data
+temp_meta$annotation = Idents(smitap_full_obj)
+names(col) = levels(Idents(smitap_full_obj))
+
+for (i in unique(temp_meta$tma_fov)){
+  sub = subset(temp_meta, temp_meta$tma_fov == i)
+  sub2 = sub %>% group_by(annotation) %>% filter(n() > 9) # remove low freq cells in this fov for better viz
+  levels(sub2) = levels(droplevels(sub2$annotation))
+  
+  p = ggplot(data = sub2) + geom_point(aes(x = cent_Y, y = -cent_X, color  = annotation, size = cellSize),
+                                        stroke = 0.5, alpha = 1) + scale_size_continuous(range = c(0.3,3)) +
+  theme(panel.background = element_rect(fill = 'black', colour = 'black'),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  scale_color_manual(values = col)
+  
+  svdir1 = paste0("/home/bkzhu/smi_tap/plot_v4/",i)
+  svdir2 = paste0(svdir1,"_cluster.png")
+  ggsave(svdir2,p, height = 6, width = 9)
+}
+```
+
+
+```{r}
+temp = smitap_full_obj@meta.data %>%
+  group_by(RNA_snn_res.0.5, tma_fov) %>%
+  summarise(n = n()) %>%
+  mutate(freq = n / sum(n))
+#emp2 = subset(temp, temp$freq > 0.50)
+#temp2
+subset(temp, temp$RNA_snn_res.0.5 == '22')
+
+```
+
+
+```{r}
+## save out the result
+meta_table = smitap_full_obj@meta.data
+write.csv(meta_table, '/home/bkzhu/smi_tap/data/tmaall_rna_metaV6.csv', row.names = F)
+```
+
+

@@ -1,0 +1,175 @@
+---
+title: "M2_freq"
+output: html_document
+---
+
+##### do combined version for whole, hot and cold
+
+## whole tissue, read in protein data
+```{r}
+### whole tissue
+prodf = read.csv('../data/Pro_normed_counts&meta_final.csv')
+prodf$tma_fov = paste0(prodf$TMA.y, '_', prodf$FOV_RNA)
+prodf$MS_ann = 'p53-WT'
+prodf$MS_ann[prodf$MS == 3] = 'p53-ab'
+
+### Data prep
+prodf_freqsum <- prodf %>%
+  group_by(tma_fov, phenoShort, MS_ann) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(tma_fov) %>%
+  mutate(percent = count / sum(count) * 100)
+
+prodf_freqMph <- subset(prodf_freqsum, phenoShort == "M2")
+prodf_freqMph$type = 'whole'
+```
+
+
+## hot spot and cold spots, read in from MESA running results
+
+```{r}
+hot_freq = read.csv('../data/hotspot_freq_BinTum.csv')
+hot_freq_m2 = hot_freq[,c('M2', 'MS2')]
+hot_freq_m2$M2 = 100* hot_freq_m2$M2
+hot_freq_m2$type = 'hot'
+
+cold_freq = read.csv('../data/coldspot_freq_BinTum.csv')
+cold_freq_m2 = cold_freq[,c('M2', 'MS2')]
+cold_freq_m2$M2 = 100* cold_freq_m2$M2
+cold_freq_m2$type = 'cold'
+```
+
+
+### rbind them
+
+```{r}
+p1 = as.data.frame(prodf_freqMph[,c('percent','type','MS_ann')])
+colnames(p1) = c('percent', 'type', 'ms')
+p2 = as.data.frame(hot_freq_m2[,c('M2','type','MS2')])
+colnames(p2) = c('percent', 'type', 'ms')
+p3 = as.data.frame(cold_freq_m2[,c('M2','type','MS2')])
+colnames(p3) = c('percent', 'type', 'ms')
+dfall = do.call(rbind, list(p1, p2, p3))
+```
+
+
+```{r}
+library(ggplot2)
+
+# Ensure factors are in the correct order
+dfall$type <- factor(dfall$type, levels = c("whole", "hot", "cold"))
+dfall$ms <- factor(dfall$ms, levels = c("non p53", "p53"))
+
+p <- ggplot(dfall, aes(x = type, y = percent, fill = ms)) +
+  geom_violin(aes(group = interaction(type, ms)), 
+              position = position_dodge(width = 0.5), 
+              trim = FALSE, color = "black", width = 5) +
+  geom_boxplot(aes(group = interaction(type, ms)), 
+               position = position_dodge(width = 0.5),
+               width = 0.05, fill = "white", outlier.shape = NA) +
+  scale_fill_manual(values = c("non p53" = "#6BA368", "p53" = "#FF8C42")) +
+  theme_classic() +
+  labs(x = "Tissue Type", y = "M2 Cell Percentage per TMA FOV") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.title = element_blank())
+
+p
+
+```
+
+
+
+
+
+
+###################################
+##### below is the seperated version 
+
+
+##### freq of macrophage
+
+```{r}
+prodf = read.csv('../data/Pro_normed_counts&meta_final.csv')
+prodf$tma_fov = paste0(prodf$TMA.y, '_', prodf$FOV_RNA)
+prodf$MS_ann = 'p53-WT'
+prodf$MS_ann[prodf$MS == 3] = 'p53-ab'
+table(prodf$MS_ann)
+
+library(dplyr)
+library(ggplot2)
+library(ggpubr)  # for stat_compare_means
+
+# Data prep
+prodf_freqsum <- prodf %>%
+  group_by(tma_fov, phenoShort, MS_ann) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(tma_fov) %>%
+  mutate(percent = count / sum(count) * 100)
+
+prodf_freqMph <- subset(prodf_freqsum, phenoShort == "M2")
+
+# Plot with Wilcoxon test
+p1 = ggplot(prodf_freqMph, aes(x = MS_ann, y = percent, fill = MS_ann)) +
+  geom_violin(color = "black", trim = FALSE) +
+  geom_boxplot(width = 0.05, fill = "white", outlier.shape = NA) +
+  scale_fill_manual(values = c("#6BA368", "#FF8C42")) +
+  stat_compare_means(method = "wilcox.test", label.y = max(prodf_freqMph$percent) + 5) +
+  theme_classic() +
+  labs(x = "MS Annotation", y = "M2 Cell Percentage per TMA FOV") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
+p1
+```
+
+
+##### now look at hot
+
+```{r}
+hot_freq = read.csv('../data/hotspot_freq_BinTum.csv')
+hot_freq_m2 = hot_freq[,c('M2', 'MS2')]
+hot_freq_m2$MS_ann = 'p53-WT'
+hot_freq_m2$MS_ann[hot_freq_m2$MS2 == 'p53'] = 'p53-ab'
+hot_freq_m2$M2 = 100* hot_freq_m2$M2
+hot_freq_m2$MS2 = hot_freq_m2$MS_ann
+
+p2 <- ggplot(hot_freq_m2, aes(x = MS2, y = M2, fill = MS2)) +
+  geom_violin(color = "black", trim = FALSE) +
+  geom_boxplot(width = 0.05, fill = "white", outlier.shape = NA) +
+  scale_fill_manual(values = c("#6BA368", "#FF8C42")) +
+  stat_compare_means(method = "wilcox.test", label.y = max(hot_freq_m2$M2) + 5) +
+  #coord_cartesian(ylim = c(0, max(hot_freq_m2$M2) )) +  # Clamp the y-axis
+  theme_classic() +
+  labs(x = "MS Annotation", y = "M2 Cell Percentage per TMA FOV") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+p2
+```
+
+```{r}
+hot_freq = read.csv('../data/coldspot_freq_BinTum.csv')
+hot_freq_m2 = hot_freq[,c('M2', 'MS2')]
+hot_freq_m2$MS_ann = 'p53-WT'
+hot_freq_m2$MS_ann[hot_freq_m2$MS2 == 'p53'] = 'p53-ab'
+hot_freq_m2$M2 = 100* hot_freq_m2$M2
+hot_freq_m2$MS2 = hot_freq_m2$MS_ann
+
+# Plot with Wilcoxon test
+p3 = ggplot(hot_freq_m2, aes(x = MS2, y = M2, fill = MS2)) +
+  geom_violin(color = "black", trim = FALSE) +
+  geom_boxplot(width = 0.05, fill = "white", outlier.shape = NA) +
+  scale_fill_manual(values = c("#6BA368", "#FF8C42")) +
+  stat_compare_means(method = "wilcox.test", label.y = max(hot_freq_m2$M2) + 5) +
+  theme_classic() +
+  labs(x = "MS Annotation", y = "M2 Cell Percentage per TMA FOV") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
+p3
+```
+
+```{r}
+library(patchwork)
+
+combined_plot <- p1 + p2 + p3 + plot_layout(ncol = 3)
+ggsave('../plot/m2_comparisonsv2_corrected.svg', height = 3,  width = 4.5)
+combined_plot
+
+```
+

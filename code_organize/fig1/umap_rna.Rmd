@@ -1,0 +1,176 @@
+---
+title: "freq_celltype_FOV"
+output: html_document
+---
+
+Read in rna data
+
+```{r}
+rnadf = read.csv('../data/RNA_raw_counts_final.csv') # rna raw counts saved out from seurat object
+rnadfmeta = read.csv('../data/RNA_meta_final.csv') # related rna meta file
+fov_info = read.csv('../../../fig2_related/analy/data/FOV_ann.csv')
+# Brooke hand annotated FOV types
+colnames(fov_info) = c('tma_fov', 'BH_ann')
+rnadfmeta = merge(x = rnadfmeta, y = fov_info, by = "tma_fov", all.x = TRUE)
+
+## reorder cell type level names to be better viz
+rnadfmeta$annV7_noNum = factor(rnadfmeta$annV7_noNum,
+                               levels = c(
+                  "Benign Endometrial gland",
+                  "Benign Stroma",
+                  "Endothelial",
+                  "Myometrium",
+                  "Macrophage/DC",
+                  "T",
+                  "Plasma/B",
+                  "Ambiguous",
+                  "Sarcoma",
+                  "Carcinoma"))
+
+library(ggplot2)
+library(dplyr)
+## set up color
+pro_cc = c('#4363d8',
+'#800000',
+'#3cb44b',
+'#000075',
+'#ffe119',
+'#46f0f0',
+'#911eb4',
+'#e6beff',
+'#ffd8b1',
+'#008080')
+names(pro_cc) = c("Ambiguous",
+                  "Benign Endometrial gland",
+                  "Benign Stroma",
+                  "Carcinoma",
+                  "Endothelial",
+                  "Macrophage/DC",
+                  "Myometrium",
+                  "Plasma/B",
+                  "Sarcoma",
+                  "T")
+
+
+rna_umap = read.csv('../data/tmall_umap.csv') #saved out umap previous run from seurat (so I dont need to rerun every time)
+rna_umap_meta = read.csv('../data/tmall_umap_relatedMeta.csv') # meta related to that
+temp = read.csv('../data/RNA_meta_final.csv') # read again - i know it dumb but bare with me this is era when people dont use llm to write code
+rna_umap$tma_fov = rna_umap_meta$tma_fov
+rna_umap$tma = rna_umap_meta$tma
+rna_umap$ann = temp$annV7_noNum
+rna_umap$patient = temp$acc
+
+rna_umap = merge(x = rna_umap, y = fov_info, by = "tma_fov", all.x = TRUE)
+rna_umap2 = subset(rna_umap, rna_umap$BH_ann == 'Tumor') # this is raw counts
+```
+
+
+```{r}
+library(ggplot2)
+
+p1 = ggplot(rna_umap2)  + 
+  geom_point(aes(x=X0, y=X1, color=ann,size = 1,stroke = 0), cex = 0.8) +
+  labs( x = "umap 1", y = "umap 2") + theme_classic() + ggtitle("rna") +
+  scale_color_manual(values = pro_cc)
+ggsave("../plot/umap_rna_0624.png",p1,height = 6, width = 8)
+p1
+```
+
+
+######### consider TMA information / patient information ---- supp
+
+```{r}
+p1 = ggplot(rna_umap2)  + 
+  geom_point(aes(x=X0, y=X1, color=patient,size = 1,stroke = 0), cex = 0.8) +
+  labs( x = "umap 1", y = "umap 2") + theme_classic() + ggtitle("rna")
+ggsave("../plot/umap_rna_patient.png",p1,height = 6, width = 7.8)
+p1
+
+```
+
+######### consider TMA information / patient information ---- supp
+
+```{r}
+rna_umap2$tma = as.character(rna_umap2$tma)
+p1 = ggplot(rna_umap2)  + 
+  geom_point(aes(x=X0, y=X1, color=tma,size = 1,stroke = 0, alpha =0.1), cex = 0.5) +
+  labs( x = "umap 1", y = "umap 2") + theme_classic() + ggtitle("rna")
+ggsave("../plot/umap_rna_tma.png",p1,height = 6, width = 7.8)
+p1
+
+```
+
+####### per cell type heatmap
+
+```{r}
+##
+rnadfnorm = read.csv('../data/RNA_normed_counts_final.csv')
+rnadfmeta = read.csv('../data/RNA_meta_final.csv')
+tumorcore = unique(fov_info$tma_fov[fov_info$BH_ann == 'Tumor'])
+rnadfnorm2 = subset(rnadfnorm, rnadfmeta$tma_fov %in% tumorcore)
+rnadfmeta2 = subset(rnadfmeta, rnadfmeta$tma_fov %in% tumorcore)
+
+### lets scale first
+rnadfnorm2$X = NULL
+rnadfnorm2sc = scale(rnadfnorm2)
+rnadfnorm2sc = as.data.frame(rnadfnorm2sc)
+
+### time long, only use degs
+# load deg
+ebv.markers = read.csv('../data/utermarkers.csv')
+library(dplyr)
+# top genes 10 version
+ebv.markers %>%
+    group_by(cluster) %>%
+    top_n(n = 10, wt = avg_log2FC) -> top
+
+## avg per cell type
+rnadfnorm2sc_sub = rnadfnorm2sc[,colnames(rnadfnorm2sc) %in% top$gene]
+rnadfnorm2sc_sub$type = rnadfmeta2$annV7_noNum
+rnadfnorm2sc_sub %>% 
+    group_by(type) %>%
+    summarise_all("mean") -> rnadfnorm2sc_sub_avg
+```
+
+
+```{r}
+## capping
+cap = 0.5
+tt = rnadfnorm2sc_sub_avg$type
+rnadfnorm2sc_sub_avg$type = NULL
+rnadfnorm2sc_sub_avg[rnadfnorm2sc_sub_avg > cap] = cap
+rnadfnorm2sc_sub_avg[rnadfnorm2sc_sub_avg < (-1*cap)] = (-1*cap)
+rnadfnorm2sc_sub_avg = as.data.frame(rnadfnorm2sc_sub_avg)
+rownames(rnadfnorm2sc_sub_avg) = tt
+rnadfnorm2sc_sub_avg2 = rnadfnorm2sc_sub_avg[c("Benign Endometrial gland",
+                  "Benign Stroma",
+                  "Endothelial",
+                  "Myometrium",
+                  "Macrophage/DC",
+                  "T",
+                  "Plasma/B",
+                  "Ambiguous",
+                  "Sarcoma",
+                  "Carcinoma"),]
+
+library(pheatmap)
+#pheatmap(plot_test)
+pdf(file="../plot/rna_celltype_hm_v2.pdf",height = 5, width = 15)
+pheatmap(rnadfnorm2sc_sub_avg2, cluster_rows=FALSE, 
+         color=colorRampPalette(c("#FF00FF", "#000000", "#FFFF00"))(50))
+dev.off()
+
+svg(file="../plot/rna_celltype_hm_v2.svg",height = 5, width = 15)
+pheatmap(rnadfnorm2sc_sub_avg2, cluster_rows=FALSE, 
+         color=colorRampPalette(c("#FF00FF", "#000000", "#FFFF00"))(50))
+dev.off()
+```
+
+
+```{r}
+## save out files for maxfuse input
+write.csv(rnadfnorm2, '../data/rna_maxinput.csv', row.names = FALSE)
+write.csv(rnadfmeta2, '../data/rna_maxinput_meta.csv', row.names = FALSE)
+```
+
+

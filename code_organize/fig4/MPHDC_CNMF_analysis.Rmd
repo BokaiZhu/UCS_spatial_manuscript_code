@@ -1,0 +1,296 @@
+---
+title: "CD4T_cNMF_analysis"
+output: html_document
+---
+
+## load the cNMF results into R
+```{r}
+usage_gep = read.csv('../data/mphDC_cnmf15_usage.csv')
+usage_gep$X = NULL
+topgene_gep = read.csv('../data/top100g_mphdc_cnmf15.csv')
+print(c(dim(usage_gep),
+dim(topgene_gep))) # make sure not missing cells
+meta_gep = read.csv('../data/mphdc_cnmf_meta.csv') # 16k mph cells in total
+```
+
+```{r}
+### some meta forming
+fullmeta = read.csv('../data/milo_mphdc_srobj2.csv')
+index_mph = read.csv('../data/milo_mphdc_ann.csv')
+fullmeta$mphmilo = 'Other'
+fullmeta$mphmilo[index_mph$index[index_mph$type == 'p53_h']] = 'p53_h'
+fullmeta$mphmilo[index_mph$index[index_mph$type == 'p53_l']] = 'p53_l'
+```
+
+
+```{r}
+library(dplyr)
+
+## some clean up
+fullmeta$X = NULL
+meta_gep$X.1 = NULL
+meta_gep$X = NULL
+
+### quick left join
+common_cols <- intersect(names(meta_gep), names(fullmeta))
+common_cols = common_cols[c(1:30)]
+meta_gep_left <- left_join(meta_gep, fullmeta, by = common_cols)
+
+usage_gep_sub = subset(usage_gep, meta_gep_left$mphmilo != 'Other')
+meta_gep_sub = subset(meta_gep_left, meta_gep_left$mphmilo != 'Other')
+usage_gep_sub$type = meta_gep_sub$mphmilo
+```
+
+
+### quick check what gep usages statistics and so
+
+```{r}
+library(ggplot2)
+library(ggpubr)
+library(patchwork)
+
+# Select first 15 genes/programs
+genes_to_plot <- colnames(usage_gep_sub)[1:15]
+
+# Initialize plot list
+plot_list <- list()
+
+# Loop over genes
+for (gene in genes_to_plot) {
+  plot_df <- data.frame(
+    expression = usage_gep_sub[[gene]],
+    type = usage_gep_sub$type
+  )
+
+  p <- ggplot(plot_df, aes(x = type, y = expression, fill = type)) +
+    geom_violin(trim = FALSE, alpha = 0.5) +
+    geom_boxplot(width = 0.1, outlier.size = 0.5) +
+    stat_compare_means(method = "wilcox.test", label = "p.format") +
+    labs(title = gene, x = NULL, y = "Expression") +
+    theme_minimal() +
+    theme(legend.position = "none")
+
+  plot_list[[gene]] <- p
+}
+
+# Combine plots
+wrap_plots(plot_list, ncol = 3)
+```
+
+
+### quick check what gep usages statistics - effect size
+
+```{r}
+# Get first 15 genes
+genes_to_test <- colnames(usage_gep_sub)[1:15]
+
+# Initialize list to store results
+effect_size_df <- data.frame(
+  gene = character(),
+  median_h = numeric(),
+  median_l = numeric(),
+  abs_diff = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop to compute medians and effect size
+for (gene in genes_to_test) {
+  expr_h <- usage_gep_sub[[gene]][usage_gep_sub$type == "p53_h"]
+  expr_l <- usage_gep_sub[[gene]][usage_gep_sub$type == "p53_l"]
+
+  med_h <- median(expr_h, na.rm = TRUE)
+  med_l <- median(expr_l, na.rm = TRUE)
+  diff <- abs(med_h - med_l)
+
+  effect_size_df <- rbind(effect_size_df, data.frame(
+    gene = gene,
+    median_h = med_h,
+    median_l = med_l,
+    abs_diff = diff
+  ))
+}
+
+# Sort by absolute difference
+effect_size_df <- effect_size_df[order(-effect_size_df$abs_diff), ]
+```
+
+
+##### lets do a quick umap on all the macrophages
+
+```{r}
+library(Seurat)
+seurat_obj = readRDS("../../../fig2_related/analy/data/uter_seurat_simp_2025.rds")
+## do  NSMP vs p53
+seurat_obj2 = subset(seurat_obj, subset = acc != '15167') #no info
+seurat_obj2@meta.data$MS2 = seurat_obj2@meta.data$MS
+seurat_obj2@meta.data$MS2[seurat_obj2@meta.data$MS2!= 'p53'] = 'non_p53'
+seurat_obj2@meta.data$type = 'Other'
+seurat_obj2@meta.data$type[seurat_obj2@meta.data$annV7_noNum == 'Macrophage/DC'] = 'Other Mph/DC'
+seurat_obj2@meta.data$type[index_mph$index[index_mph$type == 'p53_h']] = 'p53_h'
+seurat_obj2@meta.data$type[index_mph$index[index_mph$type == 'p53_l']] = 'p53_l'
+
+## macropahge subset
+seurat_mph = subset(seurat_obj2, annV7_noNum == 'Macrophage/DC')
+seurat_mph <- RunUMAP(
+  seurat_mph, 
+  reduction = "harmony", 
+  dims = 1:30, 
+  #umap.method = "uwot", 
+  n.neighbors = 15,     # try lower or higher values
+  min.dist = 0.5        # try 0.01–0.5 (lower = more "trajectory-like")
+)
+DimPlot(seurat_mph, reduction = "umap", group.by = "type")
+```
+
+
+#### try to link back the GEP values ontop of the UMAP
+
+```{r}
+meta_dfmph = seurat_mph@meta.data
+#meta_gep
+share_coln = intersect(colnames(meta_dfmph), colnames(meta_gep))[c(1:20)]
+
+## match
+key_dfmph <- do.call(paste, c(meta_dfmph[share_coln], sep = "_"))
+key_gep   <- do.call(paste, c(meta_gep[share_coln], sep = "_"))
+matching_indices <- match(key_dfmph, key_gep)
+
+## add new assay
+usage_gepm = usage_gep[matching_indices,]
+```
+
+
+## add new assay of gep to the object
+### potentially 7, 8 , 9 is interesting
+
+```{r}
+rownames(usage_gepm) = colnames(seurat_mph)
+cnmfgep <- CreateAssayObject(counts = t(usage_gepm))
+seurat_mph[["cnmf"]] <- cnmfgep
+
+FeaturePlot(seurat_mph, features = c("Usage-5", "Usage-7", "Usage-8", "Usage-9", 'Usage-1'))
+```
+
+#####  now consider making better plots
+
+```{r}
+library(Seurat)
+library(ggplot2)
+
+# Extract UMAP coordinates
+umap_df <- Embeddings(seurat_mph, "umap") %>% as.data.frame()
+umap_df$type <- seurat_mph$type
+
+# Label highlight and background groups
+umap_df$group <- ifelse(umap_df$type %in% c("p53_h", "p53_l"), umap_df$type, "other")
+
+# Plot
+p = ggplot(umap_df, aes(x = UMAP_1, y = UMAP_2)) +
+  # Background cells
+  geom_point(data = subset(umap_df, group == "other"),
+             color = "lightgrey", size = 0.8, alpha = 0.2, shape = 16) +
+  # Highlighted h/l cells
+  geom_point(data = subset(umap_df, group != "other"),
+             aes(color = group), size = 1.2, alpha = 0.9, shape = 16) +
+  scale_color_manual(values = c("p53_l" = "#547AA5", "p53_h" = "#E64B35")) +  # or choose your own palette
+  theme_classic() +
+  theme(
+    legend.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank()
+  )
+ggsave('../plots/mphDC_umap_typeV2.png', width = 6, height = 5)
+
+p
+```
+
+
+
+```{r}
+library(ggplot2)
+library(Seurat)
+library(patchwork)
+
+# Custom "iris-like" palette (soft blue to violet-pink)
+iris_palette <- c("#D0E6F5", "#89BFE2", "#6886C5", "#8F63B2", "#DB65AD")
+
+# Get UMAP
+umap_df <- Embeddings(seurat_mph, "umap") %>% as.data.frame()
+
+features <- c("Usage-7", "Usage-8", "Usage-9")
+plot_list <- list()
+
+for (gene in features) {
+  expr_raw <- FetchData(seurat_mph, vars = gene)[[1]]
+  
+  # Clip expression to 5–95% quantiles
+  q5 <- quantile(expr_raw, 0.05, na.rm = TRUE)
+  q95 <- quantile(expr_raw, 0.95, na.rm = TRUE)
+  expr_clipped <- pmin(pmax(expr_raw, q5), q95)
+
+  plot_data <- umap_df
+  plot_data$expr <- expr_clipped
+
+  p <- ggplot(plot_data, aes(x = UMAP_1, y = UMAP_2)) +
+    geom_point(
+      data = subset(plot_data, expr == 0),
+      color = "lightgrey", size = 0.5, alpha = 0.2, shape = 16
+    ) +
+    geom_point(
+      data = subset(plot_data, expr > 0),
+      aes(color = expr),
+      size = 1.1, alpha = 0.9, shape = 16
+    ) +
+    scale_color_gradientn(colors = iris_palette) +
+    labs(title = gene) +
+    theme_classic() +
+    theme(
+      legend.title = element_blank(),
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      axis.line = element_blank(),
+      plot.title = element_text(size = 12, face = "bold")
+    )
+
+  plot_list[[gene]] <- p
+}
+
+# Combine and export
+combined <- wrap_plots(plot_list, ncol = 3)
+ggsave("../plots/mphDC_feature_usage_7_8_9_iris.png", combined, width = 18, height = 5, dpi = 600)
+
+combined
+
+```
+
+###### ok great
+
+try to annotate u7, u8, u9
+```{r}
+library(enrichR)
+
+dbs <- c("GO_Molecular_Function_2015", "GO_Cellular_Component_2015", "GO_Biological_Process_2015")
+enriched <- enrichr(topgene_gep$X6[c(1:50)], dbs)
+results7 = enriched$GO_Biological_Process_2015
+View(results7)
+```
+
+
+```{r}
+library(enrichR)
+
+dbs <- c("GO_Molecular_Function_2015", "GO_Cellular_Component_2015", "GO_Biological_Process_2015")
+enriched <- enrichr(topgene_gep$X7[c(1:50)], dbs)
+results8 = enriched$GO_Biological_Process_2015
+View(results8)
+```
+
+
+```{r}
+library(enrichR)
+
+dbs <- c("GO_Molecular_Function_2015", "GO_Cellular_Component_2015", "GO_Biological_Process_2015")
+enriched <- enrichr(topgene_gep$X8[c(1:50)], dbs)
+results9 = enriched$GO_Biological_Process_2015
+View(results9)
+```

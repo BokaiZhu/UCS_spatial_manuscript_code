@@ -1,0 +1,161 @@
+---
+title: "freq_celltype_FOV"
+output: html_document
+---
+
+##### Read RNA data
+
+```{r}
+rnadf = read.csv('../data/RNA_raw_counts_final.csv')
+rnadfmeta = read.csv('../data/RNA_meta_final.csv')
+fov_info = read.csv('../data/FOV_ann.csv')
+colnames(fov_info) = c('tma_fov', 'BH_ann')
+rnadfmeta = merge(x = rnadfmeta, y = fov_info, by = "tma_fov", all.x = TRUE)
+
+## reorder cell type level names to be better viz
+rnadfmeta$annV7_noNum = factor(rnadfmeta$annV7_noNum,
+                               levels = c(
+                  "Benign Endometrial gland",
+                  "Benign Stroma",
+                  "Endothelial",
+                  "Myometrium",
+                  "Macrophage/DC",
+                  "T",
+                  "Plasma/B",
+                  "Ambiguous",
+                  "Sarcoma",
+                  "Carcinoma"))
+```
+
+set up color
+```{r}
+library(ggplot2)
+library(dplyr)
+## set up color
+pro_cc = c('#4363d8',
+'#800000',
+'#3cb44b',
+'#000075',
+'#ffe119',
+'#46f0f0',
+'#911eb4',
+'#e6beff',
+'#ffd8b1',
+'#008080')
+names(pro_cc) = c("Ambiguous",
+                  "Benign Endometrial gland",
+                  "Benign Stroma",
+                  "Carcinoma",
+                  "Endothelial",
+                  "Macrophage/DC",
+                  "Myometrium",
+                  "Plasma/B",
+                  "Sarcoma",
+                  "T")
+
+```
+
+
+Read in protein data
+
+```{r}
+prodf = read.csv('../data/Pro_normed_counts&meta_final.csv')
+prodf$tma_fov = paste0(prodf$TMA.y, '_', prodf$FOV_RNA)
+prodf = merge(x = prodf, y = fov_info, by = "tma_fov", all.x = TRUE)
+
+## reorder cell type level names to be better viz
+prodf$phenoShort = factor(prodf$phenoShort,
+                               levels = c(
+                  "Benign stroma vs perivascular smooth muscle",
+                  "Benign stroma",
+                  "Endothelial",
+                  'Fibroblast desmoplastic stroma population',
+                  'Perivascular smooth muscle',
+                  "Myometrium",
+                  "DC",
+                  'M1',
+                  'M2',
+                  "CD4",
+                  'CD8',
+                  "B",
+                  'Neutrophil',
+                  'Other',
+                  "HG sarcoma vs PD carcinoma",
+                  'Rhabdomyosarcoma',
+                  'Spindle carcinoma vs sarcoma',
+                  "Sarcoma",
+                  "Carcinoma"))
+
+ll19 = c('#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080', '#e6beff', '#9a6324', '#fffac8', '#8298e5', '#5875dc', '#2e51d4', '#ffd8b1', '#000075', '#808080')
+names(ll19) = sort(unique(prodf$phenoShort))
+ll19
+```
+
+
+##### RNA version first
+
+## same thing but sample lvel
+
+```{r}
+## only use the ones from tumor
+rnadfmeta2 = subset(rnadfmeta, rnadfmeta$BH_ann == 'Tumor')
+## group by acc -- nbhd
+rnadfmeta2 %>% group_by(tma_fov, annV7_noNum) %>% summarise (n = n()) %>%
+  mutate(freq = n / sum(n)) -> percCN
+#head(percCN)
+
+########## sort freq but check if in protein data
+temp = subset(percCN, percCN$annV7_noNum == 'Carcinoma')
+
+# orig seq
+oo = temp$tma_fov[order(temp$freq)]
+profov = unique(prodf$tma_fov)
+oo1 = oo[oo %in% profov]
+`%notin%` = Negate('%in%')
+oo2 = oo[oo %notin% profov]
+
+# reseq based on share status
+percCN$tma_fov = as.factor(percCN$tma_fov)
+percCN$tma_fov <- factor(percCN$tma_fov, levels = unlist(c(oo1, oo2)))
+
+
+p = ggplot(percCN, aes(fill=annV7_noNum, y=freq, x=tma_fov)) + 
+    geom_bar(position="stack", stat="identity") + scale_fill_manual(values=pro_cc)+
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+ggsave('../plot/rna_sample_freqV2.png', height = 4, width = 11.5)
+ggsave('../plot/rna_sample_freqV2.svg', height = 4, width = 11.5)
+p
+
+```
+
+
+######## per sample version
+
+```{r}
+## only use the ones from tumor
+prodf2 = subset(prodf, prodf$BH_ann == 'Tumor')
+## group by acc -- nbhd
+prodf2 %>% group_by(tma_fov, phenoShort) %>% summarise (n = n()) %>%
+  mutate(freq = n / sum(n)) -> percCN
+#head(percCN)
+
+`%notin%` <- Negate(`%in%`)
+### sort freq
+#temp = subset(percCN, percCN$phenoShort == 'Carcinoma')
+# reseq based on share status
+percCN = subset(percCN, percCN$tma_fov != '7_8')
+percCN$tma_fov = as.factor(percCN$tma_fov)
+percCN$tma_fov <- factor(percCN$tma_fov, levels = unlist(c(oo1)))
+
+p = ggplot(percCN, aes(fill=phenoShort, y=freq, x=tma_fov)) + 
+    geom_bar(position="stack", stat="identity") + scale_fill_manual(values=ll19)+
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.key.size = unit(0.35, 'cm'))
+ggsave('../plot/pro_sample_freqV2.png', height = 4, width = 9)
+ggsave('../plot/pro_sample_freqV2.svg', height = 4, width = 9)
+p
+
+```
+

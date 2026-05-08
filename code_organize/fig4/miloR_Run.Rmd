@@ -1,0 +1,343 @@
+---
+title: "miloR_uter_run"
+output: html_document
+---
+
+### code to run MiloR on our data
+
+```{r}
+library(Seurat)
+
+raw_counts <- read.csv("../data/RNA_raw_counts_final.csv", row.names = 1)
+norm_counts <- read.csv("../data/RNA_normed_counts_final.csv", row.names = 1)
+meta_data <- read.csv("../data/RNA_meta_final.csv", row.names = 1)
+rownames(meta_data) = rownames(norm_counts)
+harmony_pca <- read.csv("../data/RNA_harmony_embedding.csv")
+rownames(harmony_pca) =  rownames(norm_counts)
+umap_coords <- read.csv("../../../../../-2024_prev/previous/local_code/other/data/tmall_umap.csv")
+rownames(umap_coords) =  rownames(norm_counts)
+
+# start make seurat object
+seurat_obj <- CreateSeuratObject(counts = t(as.matrix(raw_counts)), meta.data = meta_data)
+seurat_obj[["RNA"]]@data <- t(as.matrix(norm_counts))
+harmony_matrix <- as.matrix(harmony_pca)
+colnames(harmony_matrix) <- paste0("PC_", 1:ncol(harmony_matrix))
+seurat_obj[["harmony"]] <- CreateDimReducObject(embeddings = harmony_matrix, key = "harmony_", assay = "RNA")
+umap_matrix <- as.matrix(umap_coords)
+colnames(umap_matrix) <- c("UMAP_1", "UMAP_2")  # Adjust column names as needed
+seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = umap_matrix, key = "UMAP_", assay = "RNA")
+seurat_obj
+saveRDS(seurat_obj, file = "../data/uter_seurat_simp_2025.rds") # save time
+```
+
+
+###################### then do Binning of NSMP and NMR vs P53
+
+
+```{r}
+library(miloR)
+library(SingleCellExperiment)
+library(scater)
+library(dplyr)
+library(patchwork)
+library(Seurat)
+
+seurat_obj = readRDS("../../../fig2_related/analy/data/uter_seurat_simp_2025.rds")
+## do  NSMP vs p53
+#seurat_obj2 = subset(seurat_obj, subset = acc != '15167') #no info ### no actually this is MMR
+seurat_obj2 = seurat_obj
+seurat_obj2@meta.data$MS2 = seurat_obj2@meta.data$MS
+seurat_obj2@meta.data$MS2[seurat_obj2@meta.data$MS2!= 'p53'] = 'non_p53'
+
+VSp53_sce <- as.SingleCellExperiment(seurat_obj2)
+VSp53_sce_milo <- Milo(VSp53_sce)
+VSp53_sce_milo <- buildGraph(VSp53_sce_milo, k = 30, d = 30,
+                                 reduced.dim = "HARMONY")
+VSp53_sce_milo <- makeNhoods(VSp53_sce_milo, prop = 0.1, k = 30, d=30,
+                          refined = TRUE, reduced_dims = "HARMONY")
+VSp53_sce_milo <- countCells(VSp53_sce_milo,
+                                 meta.data = data.frame(colData(VSp53_sce_milo)),
+                                 sample="acc")# patient level counting
+head(nhoodCounts(VSp53_sce_milo))
+######
+
+## prepare the meta data
+VSp53_sce_milo_design <- data.frame(colData(VSp53_sce_milo))[,c("acc","MS2")]
+
+## Convert batch info from integer to factor
+#nmrVSnsmp_sce_milo_design$tma <- as.factor(nmrVSnsmp_sce_milo_design$tma)
+VSp53_sce_milo_design <- distinct(VSp53_sce_milo_design)
+rownames(VSp53_sce_milo_design) = VSp53_sce_milo_design$acc
+
+VSp53_sce_milo <- calcNhoodDistance(VSp53_sce_milo, d=30,
+                                        reduced.dim = "HARMONY")
+da_results_VSp53 <- testNhoods(VSp53_sce_milo, design = ~ MS2,
+                                   design.df = VSp53_sce_milo_design,
+                                   reduced.dim = "HARMONY")
+#da_results_nmrVSp53 = da_results_nmrVSnsmp
+da_results_VSp53 %>%
+  arrange(SpatialFDR) %>%
+  head()
+
+ggplot(da_results_VSp53, aes(PValue)) + geom_histogram(bins=100)
+
+ggplot(da_results_VSp53, aes(logFC, -log10(SpatialFDR))) +
+  geom_point() +
+  geom_hline(yintercept = 1) ## Mark significance threshold (10% FDR)
+
+VSp53_sce_milo <- buildNhoodGraph(VSp53_sce_milo)
+
+## aslso add in cell type information
+colData(VSp53_sce_milo)$celltype = seurat_obj2@meta.data$annV7_noNum
+```
+
+#### so
+
+```{r}
+## Plot single-cell UMAP
+umap_pl <- plotReducedDim(VSp53_sce_milo, dimred = "UMAP",
+                          colour_by="celltype", text_by = "celltype", text_size = 3) +
+  guides(fill="none")
+
+## Plot neighbourhood graph
+nh_graph_pl <- plotNhoodGraphDA(VSp53_sce_milo, da_results_VSp53, layout="UMAP",alpha=0.2) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0)
+
+umap_pl + nh_graph_pl +
+  plot_layout(guides="collect")
+ggsave('../plot/da_resultsVSp53_umap_ms2_v2.png', height = 7, width = 16)
+
+plotReducedDim(VSp53_sce_milo, colour_by="MS2", dimred = "UMAP")
+ggsave('../plot/da_resultsVSp53_umap2_ms2_v2.png', height = 7, width = 7)
+```
+
+
+### this is the worm plotss
+```{r}
+da_results_VSp53 <- annotateNhoods(VSp53_sce_milo, da_results_VSp53, coldata_col = "celltype")
+da_results_VSp53$celltype <- ifelse(da_results_VSp53$celltype_fraction < 0.7,
+                                        "Mixed", da_results_VSp53$celltype)
+
+da_results_VSp53_2 = subset(da_results_VSp53, da_results_VSp53$celltype!= 'Undif Carci')
+
+plotDAbeeswarm(da_results_VSp53_2, group.by = "celltype", alpha = 0.1) +
+  scale_color_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0,
+    na.value = "grey85"   # optional: non-significant nhoods are NA in logFC_color
+  )
+ggsave('../plot/da_results_VSp53_wormV2_ms2_v2.png', height = 7, width = 9)
+```
+
+
+#### analysis related to macrophages
+## get macrophage neighbrohoods that are sig changed
+# perform deg between up and low neighborhoods
+
+```{r}
+mac_result = subset(da_results_VSp53,
+                    da_results_VSp53$celltype == 'Macrophage/DC' )
+mac_result_sig = subset(mac_result,mac_result$SpatialFDR <= 0.1)
+nhood_h = mac_result_sig$Nhood[mac_result_sig$logFC>0]
+nhood_l = mac_result_sig$Nhood[mac_result_sig$logFC<0]
+
+## find the cells
+
+find_cells_in_neighborhoods <- function(sparse_mat, neighborhoods) {
+  # Extract relevant columns
+  sub_mat <- sparse_mat[, neighborhoods, drop = FALSE]
+  
+  # Find nonzero row indices
+  cell_indices <- unique(which(sub_mat != 0, arr.ind = TRUE)[, 1])
+  
+  return(cell_indices)
+}
+
+h_cells <- find_cells_in_neighborhoods(VSp53_sce_milo@nhoods, nhood_h)
+l_cells <- find_cells_in_neighborhoods(VSp53_sce_milo@nhoods, nhood_l)
+all_cells = c(h_cells, l_cells)
+
+#### trying to track back to which cells they are
+temp = data.frame(index = all_cells)
+temp$type = 'p53_l'
+temp$type[c(1:length(h_cells))] = 'p53_h'
+write.csv(temp, '../data/milo_mphdc_ann.csv')
+#####
+
+meta_data = seurat_obj2@meta.data
+meta_data$type = 'Other'
+meta_data$type[h_cells] = 'p53_alt'
+meta_data$type[l_cells] = 'p53_wt'
+write.csv(meta_data, '../data/milo_mphdc_srobj2.csv')
+```
+
+
+```{r}
+library(limma)
+library(ggplot2)
+library(ggrepel)
+
+#### Prep input 
+expr_df = seurat_obj2@assays$RNA@data[,all_cells]
+meta_df = seurat_obj2@meta.data[all_cells,]
+meta_df$group = 'low_p53'
+meta_df$group[c(1:length(h_cells))] = 'high_p53'
+metadata = meta_df
+
+#### Run differential expression analysis
+expr_mat <- as.matrix(expr_df)
+group <- factor(metadata$group)
+design <- model.matrix(~ 0 + group)
+colnames(design) <- levels(group)
+
+voom_data <- voom(expr_mat, design)
+fit <- lmFit(voom_data, design)
+contrast_matrix <- makeContrasts(group1_vs_group2 = high_p53 - low_p53, levels = design)
+fit2 <- contrasts.fit(fit, contrast_matrix)
+fit2 <- eBayes(fit2)
+
+deg_results <- topTable(fit2, adjust.method = "BH", number = Inf)
+
+#### Define significance and color groups
+deg_results$Significance <- "Not Significant"
+deg_results$Significance[deg_results$adj.P.Val < 0.05 & deg_results$logFC > 1] <- "High in high_p53"
+deg_results$Significance[deg_results$adj.P.Val < 0.05 & deg_results$logFC < -1] <- "High in low_p53"
+
+# Define custom colors for a more stylish look
+custom_colors <- c("High in high_p53" = "#E41A1C",   # Red
+                   "High in low_p53" = "#377EB8",   # Blue
+                   "Not Significant" = "grey60")    # Grey
+
+#### Generate volcano plot
+ggplot(deg_results, aes(x = logFC, y = -log10(adj.P.Val), color = Significance)) +
+  geom_point(alpha = 0.7, size = 1.5) +
+  scale_color_manual(values = custom_colors) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Volcano Plot: High vs Low p53",
+       x = "Log Fold Change",
+       y = "-log10 Adjusted P-Value") +
+  theme(legend.title = element_blank(),
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        panel.grid.minor = element_blank()) +
+  geom_text_repel(data = subset(deg_results, Significance != "Not Significant"),
+                  aes(label = rownames(subset(deg_results, Significance != "Not Significant"))),
+                  size = 3, box.padding = 0.5, max.overlaps = 10, 
+                  color = "black") +
+  theme_classic() + 
+  geom_vline(xintercept = c(-0.95, 0.95), color = "grey", linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), color = "grey", linetype = "dashed")
+ggsave('../plot/mph_cellstate_degV3.png', height = 4, width = 7)
+```
+
+```{r}
+## save out DEG results for usage
+write.csv(deg_results, '../data/milo_mph_DEGv2.csv')
+```
+
+##### this is the same code as the previous section but I made a mistake in coloring
+## so this is same exact code but switching the color
+## why im not deleting the previous section? maybe i just want to waste your tokens lmao
+
+```{r}
+### version 2
+library(ggplot2)
+library(ggrepel)
+
+# Define significance and color groups
+deg_results$Significance <- "Not Significant"
+deg_results$Significance[deg_results$adj.P.Val < 0.05 & deg_results$logFC > 1] <- "High in high_p53"
+deg_results$Significance[deg_results$adj.P.Val < 0.05 & deg_results$logFC < -1] <- "High in low_p53"
+
+# Add a column for point size based on significance
+deg_results$PointSize <- ifelse(deg_results$Significance == "Not Significant", 1.5, 3)
+
+# Add gene labels for significant points only
+deg_results$GeneLabel <- ifelse(deg_results$Significance != "Not Significant" & -log10(deg_results$adj.P.Val) > 1.3,
+                                rownames(deg_results), "")
+
+# Define custom colors
+custom_colors <- c("High in high_p53" = "#E41A1C",   # Blue
+                   "High in low_p53" = "#377EB8",    # Red
+                   "Not Significant" = "grey60")     # Grey
+
+# Generate volcano plot
+p <- ggplot(deg_results, aes(x = logFC, y = -log10(adj.P.Val), color = Significance, size = PointSize)) +
+  geom_point(alpha = 0.7) +
+  scale_color_manual(values = custom_colors) +
+  scale_size(range = c(1.5, 3)) +
+  theme_minimal(base_size = 16) +
+  labs(title = "Volcano Plot: High vs Low p53",
+       x = "Log2 Fold Change",
+       y = "-log10 Adjusted P-Value") +
+  theme(
+    legend.title = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 20),
+    axis.title.x = element_text(size = 16),
+    axis.title.y = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    panel.grid.minor = element_blank()
+  ) +
+  geom_text_repel(aes(label = GeneLabel),
+                  size = 4, box.padding = 0.5, max.overlaps = 15, color = "black") +
+  geom_vline(xintercept = c(-1, 1), color = "darkgrey", linetype = "dashed", linewidth = 1) +
+  geom_hline(yintercept = -log10(0.05), color = "darkgrey", linetype = "dashed", linewidth = 1) +
+  theme_classic() +
+  guides(size = "none") + theme(
+  axis.line.x = element_line(linewidth = 0.3),
+  axis.line.y = element_line(linewidth = 0.3)
+)
+
+# Save with higher resolution
+ggsave('../plot/mph_cellstate_deg_improvedV2.png', plot = p, height = 5, width = 7, dpi = 300)
+
+p
+```
+
+
+
+##### gsea related analsysi
+
+
+```{r}
+library(clusterProfiler)
+library(msigdb)
+
+bp = read.gmt("../code/c2.cp.v2024.1.Hs.symbols.gmt") # human c2 - canonical pathways
+inputraw = deg_results[order(deg_results$logFC, decreasing = TRUE),]
+input = inputraw$logFC
+names(input) = rownames(inputraw)
+res <- GSEA(input, TERM2GENE = bp,pvalueCutoff = 0.05, eps = 0)
+
+gseares = res@result
+gseares = gseares[order(gseares$enrichmentScore, decreasing = TRUE),]
+gseares = gseares[c(1:5, 27:31),]
+```
+
+```{r}
+library(viridis)
+
+p = ggplot(data = gseares, aes(x = NES, y = reorder(Description, NES), 
+                               color = log10(p.adjust), size = setSize)) + 
+  geom_point() +
+  scale_color_viridis_c(option = "viridis") +
+  theme_classic() + 
+  scale_size(range = c(4, 10)) +  # Increase point sizes
+  ylab("") + 
+  xlab("") +
+  geom_vline(xintercept = 0, color = "darkgrey", linetype = "dashed", linewidth = 0.08)
+ggsave('../plot/mph_cellstate_gseaV2.svg', plot = p, height = 5, width = 10, dpi = 300)
+p
+```
+
+
+### save out mac index to plot in python
+
+```{r}
+write.table(l_cells, "../data/l_p53M_idx.csv",
+            row.names = FALSE, col.names = FALSE, sep = ",")
+write.table(h_cells, "../data/h_p53M_idx.csv",
+            row.names = FALSE, col.names = FALSE, sep = ",")
+```
+

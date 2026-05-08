@@ -1,0 +1,166 @@
+---
+title: "freq_celltype_FOV"
+output: html_document
+---
+
+read in protein data new (0624 version)
+
+```{r}
+# read in protein count data
+pro = read.csv('../data/Pro_normed_counts&meta_final_temp.csv')
+fov_info = read.csv('../../../fig2_related/analy/data/FOV_ann.csv') # same per fov annotation
+colnames(fov_info) = c('tma_fov', 'BH_ann')
+pro$tma_fov = paste0(pro$TMA.y, '_', pro$FOV_RNA)
+pro = merge(x = pro, y = fov_info, by = "tma_fov", all.x = TRUE)
+```
+
+```{r}
+## reorder cell type level names to be better viz
+pro$phenoShort = factor(pro$phenoShort,
+                               levels = c(
+                  "Benign stroma vs perivascular smooth muscle",
+                  "Benign stroma",
+                  "Endothelial",
+                  'Fibroblast desmoplastic stroma population',
+                  'Perivascular smooth muscle',
+                  "Myometrium",
+                  "DC",
+                  'M1',
+                  'M2',
+                  "CD4",
+                  'CD8',
+                  "B",
+                  'Neutrophil',
+                  'Other',
+                  "HG sarcoma vs PD carcinoma",
+                  'Rhabdomyosarcoma',
+                  'Spindle carcinoma vs sarcoma',
+                  "Sarcoma",
+                  "Carcinoma"))
+
+ll19 = c('#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080', '#e6beff', '#9a6324', '#fffac8', '#8298e5', '#5875dc', '#2e51d4', '#ffd8b1', '#000075', '#808080')
+names(ll19) = sort(unique(pro$phenoShort))
+#ll19
+```
+
+
+## only use tumor only regions
+```{r}
+features = colnames(pro)[c(14:75)] # note out which are the columns of actual protein features
+pro2 = subset(pro, pro$BH_ann == 'Tumor')
+
+library(Seurat)
+input = pro2[,features]
+pro_obj = CreateSeuratObject(counts = t(input))
+pro_obj = NormalizeData(pro_obj, normalization.method = 'CLR', margin = 1) # CLR on raw protein counts
+pro_obj = ScaleData(pro_obj)
+pro_obj = RunPCA(pro_obj, features = rownames(pro_obj))
+
+library(harmony)
+pro_obj@meta.data$tma = pro2$TMA.x
+pro_obj <- pro_obj %>% RunHarmony("tma")
+
+Idents(pro_obj) = pro2$phenoShort
+pro_obj <- FindNeighbors(pro_obj, dims = 1:30, reduction = 'harmony')
+pro_obj <- RunUMAP(pro_obj, dims = 1:30, reduction = 'harmony')
+
+pp = DimPlot(pro_obj, reduction = "umap", raster=FALSE) + scale_color_manual(values = ll19)
+ggsave("../plot/umap_hmpro_clr1_0624.png", pp,height = 6, width = 10)
+pp
+
+pro_obj@meta.data$patient = pro2$Accession.number
+pp = DimPlot(pro_obj, reduction = "umap", group.by = 'patient', raster=FALSE)
+ggsave("../plot/umap_hmpro_clr1_0624_acc.png", pp,height = 6, width = 8)
+pp
+
+pro_obj@meta.data$tma = pro2$TMA.x
+pp = DimPlot(pro_obj, reduction = "umap", group.by = 'tma', raster=FALSE)
+ggsave("../plot/umap_hmpro_clr1_0624_tma.png", pp,height = 6, width = 8)
+pp
+
+utr.markers <- FindAllMarkers(pro_obj, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.025)
+write.csv(utr.markers, '../data/utermarkers_pro.csv')
+```
+
+
+```{r}
+# load deg
+gen.markers = read.csv('../data/utermarkers_pro.csv')
+
+library(dplyr)
+maxcells  <- min(table(Idents(pro_obj)))
+dsb_obj = subset(pro_obj, downsample = maxcells)
+pp = DoHeatmap(dsb_obj, features = gen.markers$gene, disp.min = -1, disp.max = 1, label=FALSE, group.colors = ll19) +
+  scale_fill_gradientn(colors = c("blue", "white", "red")) + 
+    theme(text = element_text(size = 5))
+ggsave('../plot/uter_pro_heatmap.png', height = 8, width = 6)
+ggsave('../plot/uter_pro_heatmap.svg', height = 8, width = 6)
+ggsave('../plot/uter_pro_heatmap.pdf', height = 8, width = 6)
+pp
+```
+
+
+```{r}
+## avg per cell type
+features = c(features, c('VIM', 'VISTA'))
+input = pro2[,features]
+pro_heat = scale(input)
+pro_heat = as.data.frame(pro_heat)
+pro_heat$type = pro2$phenoShort
+library(dplyr)
+pro_heat %>% 
+    group_by(type) %>%
+    summarise_all("mean") -> pro_heaavg
+
+## capping
+cap = 0.5
+tt = pro_heaavg$type
+pro_heaavg$type = NULL
+pro_heaavg[pro_heaavg > cap] = cap
+pro_heaavg[pro_heaavg < (-1*cap)] = (-1*cap)
+pro_heaavg = as.data.frame(pro_heaavg)
+rownames(pro_heaavg) = tt
+pro_heaavg2 = pro_heaavg[c(
+                  "Benign stroma vs perivascular smooth muscle",
+                  "Benign stroma",
+                  "Endothelial",
+                  'Fibroblast desmoplastic stroma population',
+                  'Perivascular smooth muscle',
+                  "Myometrium",
+                  "DC",
+                  'M1',
+                  'M2',
+                  "CD4",
+                  'CD8',
+                  "B",
+                  'Neutrophil',
+                  'Other',
+                  "HG sarcoma vs PD carcinoma",
+                  'Rhabdomyosarcoma',
+                  'Spindle carcinoma vs sarcoma',
+                  "Sarcoma",
+                  "Carcinoma"),]
+
+library(pheatmap)
+#pheatmap(plot_test)
+pdf(file="../plot/pro_celltype_hm_v2.pdf",height = 5, width = 15)
+pheatmap(pro_heaavg2, cluster_rows=FALSE, 
+         color=colorRampPalette(c("#FF00FF", "#000000", "#FFFF00"))(50))
+dev.off()
+
+svg(file="../plot/pro_celltype_hm_v2.svg",height = 5, width = 15)
+pheatmap(pro_heaavg2, cluster_rows=FALSE, 
+         color=colorRampPalette(c("#FF00FF", "#000000", "#FFFF00"))(50))
+dev.off()
+
+```
+
+
+######## save out for maxfuse input
+
+```{r}
+write.csv(pro2, '../data/pro_maxinput.csv', row.names = FALSE)
+features
+```
+
+

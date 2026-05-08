@@ -1,0 +1,572 @@
+---
+title: "check_protein"
+output: html_document
+---
+
+```{r}
+library(dplyr)
+library(tidyverse)
+library(parallel)
+library(rlang)
+
+source('./get_triangulation_distances.R')
+source('./iterate_triangulation_distance.R')
+```
+
+
+```{r}
+pro = read.csv('../../../../../-2024_prev/previous/local_code/protein/data/0221_all_asAbove_withClinical.csv')
+#table(pro$Overall.Molecular.Subtype..1...POLE..2...MMR..3...p53..4...NSMP..X...unknown, useNA = "always")
+pro$MS = as.character(pro$Overall.Molecular.Subtype..1...POLE..2...MMR..3...p53..4...NSMP..X...unknown)
+length(unique(pro$phenoShort)) # 19 cell type version
+fov_info = read.csv('../data/FOV_ann.csv')
+colnames(fov_info) = c('tma_fov', 'BH_ann')
+pro$tma_fov = paste0(pro$TMA.y, '_', pro$FOV_RNA)
+pro = merge(x = pro, y = fov_info, by = "tma_fov", all.x = TRUE)
+
+####
+table(pro$phenoShort)
+```
+
+###### Bin all tumor cells here
+```{r}
+# Define tumor-related labels
+tumor_labels <- c(
+  "Carcinoma",
+  "Spindle carcinoma vs sarcoma",
+  "Sarcoma",
+  "Rhabdomyosarcoma",
+  "HG sarcoma vs PD carcinoma"
+)
+
+# Create a new column with binned values
+pro$phenoBin <- ifelse(
+  pro$phenoShort %in% tumor_labels,
+  "Tumor",
+  pro$phenoShort
+)
+
+table(pro$phenoBin)
+```
+
+```{r}
+## add dummy global locations
+pro['global_x'] = 0
+pro['global_y'] = 0
+
+i = 0
+fovlist = unique(pro['TMA_FOV_RNA'])
+
+for (fov in fovlist[[1]]){
+  print(i)
+  pro[pro['TMA_FOV_RNA'] == fov,'global_x']  = 10000*i + pro[pro['TMA_FOV_RNA'] == fov,'X_cent']
+  pro[pro['TMA_FOV_RNA'] == fov,'global_y']  = 10000*i + pro[pro['TMA_FOV_RNA'] == fov,'Y_cent']
+  i = i + 1
+}
+    
+##
+pro$data_index = c(1:nrow(pro))
+cc2use = pro[,c('global_x', 'global_y', 'TMA_FOV_RNA', 'phenoBin', 'MS', 'data_index')]
+cc2use['TMA_FOV_RNA-group'] = paste(cc2use$TMA_FOV_RNA, cc2use$MS, sep="-")
+
+## run actual value
+tri_dist_celltype <- get_triangulation_distances(df_input = cc2use,
+                                                 id = "data_index",
+                                                 x_pos = "global_x",
+                                                 y_pos = "global_y",
+                                                 cell_type = "phenoBin",
+                                                 region = "TMA_FOV_RNA-group",
+                                                 num_cores = 10)
+
+tri_dist_iteration_celltype <- iterate_triangulation_distance(df_input = cc2use,
+                                                                id = "data_index",
+                                                                x_pos = "global_x",
+                                                                y_pos = "global_y",
+                                                                cell_type = "phenoBin",
+                                                                region = "TMA_FOV_RNA-group",
+                                                                num_iterations = 1000,
+                                                                num_cores = 10)
+
+```
+
+```{r}
+## save out
+write.csv(tri_dist_iteration_celltype, '../data/pro_tri_dist_iteration_celltypeV3.csv',
+          row.names = FALSE)
+write.csv(tri_dist_celltype, '../data/pro_tri_dist_celltypeV3.csv',
+          row.names = FALSE)
+```
+
+
+########## no rerun just load
+
+```{r}
+tri_dist_iteration_celltype = read.csv('../data/pro_tri_dist_iteration_celltypeV3.csv')
+tri_dist_celltype = read.csv('../data/pro_tri_dist_celltypeV3.csv')
+
+## 180nm per pixel or say 0.18um
+distance_threshold = 277 # corresponds to 50um or 100um
+
+tri_dist_iteration_celltype$group = gsub(".*-", "", tri_dist_iteration_celltype$`TMA_FOV_RNA.group`)
+tri_dist_celltype$group = gsub(".*-", "", tri_dist_celltype$`TMA_FOV_RNA.group`)
+
+tri_dist_iteration_celltype$ms = 'Other'
+tri_dist_iteration_celltype$ms[tri_dist_iteration_celltype$group == 2] = 'p53-WT'
+tri_dist_iteration_celltype$ms[tri_dist_iteration_celltype$group == 3] = 'p53-ab'
+tri_dist_iteration_celltype$ms[tri_dist_iteration_celltype$group == 4] = 'p53-WT'
+
+tri_dist_celltype$ms = 'Other'
+tri_dist_celltype$ms[tri_dist_celltype$group == 2] = 'p53-WT'
+tri_dist_celltype$ms[tri_dist_celltype$group == 3] = 'p53-ab'
+tri_dist_celltype$ms[tri_dist_celltype$group == 4] = 'p53-WT'
+
+
+# Reformat observed dataset
+ggdf_observed_celltype <- tri_dist_celltype %>%
+  dplyr::filter(distance <= distance_threshold) %>%
+  # Calculate observed mean distance and list values
+  dplyr::group_by(celltype1, celltype2, ms) %>%
+  summarize(observed = list(distance),
+            observed_mean = mean(unlist(observed), na.rm = TRUE)) %>%
+  ungroup()
+
+# reformat iteration bg dataset
+ggdf_expected_celltype <- tri_dist_iteration_celltype %>%
+  gather(key = "iteration", value = "mean_distance", -c(celltype1, celltype2, `ms`))
+ggdf_expected_celltype <- ggdf_expected_celltype %>% 
+  mutate( group = `ms` ) %>%
+  # Calculate expected mean distance and list values
+  group_by(celltype1, celltype2, ms)
+ggdf_expected_celltype$mean_distance = as.numeric(ggdf_expected_celltype$mean_distance) # NA exist but is taken care of 
+ggdf_expected_celltype <- ggdf_expected_celltype %>%  
+  summarize(expected = list(mean_distance),
+            expected_mean = mean(mean_distance, na.rm = TRUE)) %>%
+  ungroup() 
+# Calculate pvalues
+ggdf_pvals_celltypes <- ggdf_expected_celltype %>%
+  left_join(ggdf_observed_celltype,
+            by = c("celltype1", "celltype2", "ms")) %>%
+  # Calculate wilcoxon test between observed and expected distances
+  group_by(celltype1, celltype2, ms) %>%
+  mutate(pvalue = wilcox.test(unlist(expected), unlist(observed), exact = FALSE)$p.value) %>%
+  ungroup() %>%
+  select(-observed, -expected)
+# Calculate log fold enrichment
+ggdf <- ggdf_pvals_celltypes %>%
+  # Calculate log fold enrichment
+  mutate(logfold_group = log2(observed_mean/expected_mean),
+         interaction = paste0(celltype1, " --> ", celltype2)) %>%
+  # Filter out pvalues less than 0.05
+  dplyr::filter(pvalue < 0.05)
+
+ggdf2 = subset(ggdf, ggdf$celltype1 == "M2" | ggdf$celltype2 == "M2")
+```
+
+############ M2 version, target grouping
+
+
+```{r}
+#ggdf2 = ggdf
+
+# Assign cell type colors
+ggdf3 <- ggdf2 %>%
+  select(interaction, ms, logfold_group) %>%
+  spread(key = ms, value = logfold_group) %>%
+  mutate(diff = (`p53-WT` - `p53-ab`)) %>%
+  arrange(`p53-ab`)
+ord_diff = ggdf3$interaction
+
+# Assign interaction order
+ggdf2$interaction <- factor(ggdf2$interaction,
+                            levels = ord_diff)
+
+notake = c('Fibroblast desmoplastic stroma population', 'Benign stroma', 
+           'Benign stroma vs perivascular smooth muscle','HG sarcoma vs PD carcinoma',
+           'Other', 'Myometrium', 'Perivascular smooth muscle')
+`%notin%` <- Negate(`%in%`)
+ggdf2 = subset(ggdf2, ggdf2$celltype1 %notin% notake & ggdf2$celltype2 %notin% notake)
+
+#### some clean up:
+## remove inter that is not complete in either groups
+
+ggdf2 = subset(ggdf2, ggdf2$interaction != 'Endothelial --> M2' & ggdf2$interaction != 'DC --> M2' & ggdf2$interaction != 'M2 --> Endothelial')
+
+### make dumb bell plots
+
+p = ggplot(data = ggdf2 %>%
+         dplyr::filter(!is.na(interaction))) +
+  #geom_vline(mapping = aes(xintercept = 0), linetype = "dashed") +
+  geom_line(mapping = aes(x = logfold_group, y = interaction),
+            na.rm = TRUE) +
+  geom_point(mapping = aes(x = logfold_group, y = interaction, fill = ms), 
+             size = 6, shape = 22, stroke = 0.5, alpha = 0.8, na.rm = TRUE) +
+  scale_fill_manual(values=c("#6BA368", "#FF8C42")) +
+  theme_bw()+
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank())
+ggsave('../plot/inter_M2_abWT-p53.svg', height = 4.5, width = 6)
+p
+```
+
+
+
+
+#######################
+##################
+############## test anchor plot
+
+
+```{r}
+#### anchor base function
+
+get_distance_matrix <- function(df_input, id_col, x_col, y_col, celltype_col, anchor_col, region_col, keep_anchor = FALSE, split_celltype = TRUE, columns_to_use,
+                                distance_threshold = 320, bins = 10, num_cores = NULL, um_pixel = 100/320){
+  # df_input = dataframe with marker expressions, celltypes, etc
+  # id_col = column name that corresponds to each unique cell ID
+  # x_col = column name that corresponds to x axis location of cells
+  # y_col = column name that corresponds to y axis location of cells
+  # celltype_col = includes option to group by celltype, if null will not group by the cell types, otherwise is column name that corresponds to celltype annotations
+  # anchor_col = column name that has T/F boolean annotations for cells to use as anchor columns
+  # distance_treshold = distance to consider
+  # bins = number of bins to split distance and assign cells into
+  # num_cores = number of cores to use during parallelization, default to using everything but 1
+  start_time <- Sys.time()
+  cat(paste0("Beginning distance matrix calculations: ", start_time, "\n"))
+  
+  # Area distance calculations
+  r_max = distance_threshold * um_pixel
+  
+  bin_area = 3.14/bins*(r_max)^2
+  bin_conversion = data.frame(bin_num = seq(1, bins, 1)) %>%
+    # Get bin radii
+    mutate(bin_radius_min = (bin_num-1)*r_max/bins,
+           bin_radius_max = (bin_num)*r_max/bins) %>%
+    # Calculate area of each bin
+    mutate(bin_area = 3.14*(bin_radius_max^2 - bin_radius_min^2))
+  
+  # Get unique regions in the dataset
+  unique_regions = unique(df_input[[region_col]])
+  
+  # Set up parallelization
+  if(is.null(num_cores)){
+    num_cores = parallel::detectCores() - 1
+  }
+  library(doSNOW)
+  library(foreach)
+  cl <- makeCluster(num_cores)
+  registerDoSNOW(cl)
+  
+  pb <- txtProgressBar(max = length(unique_regions), style = 3)
+  progress <- function(n) setTxtProgressBar(pb, n)
+  opts <- list(progress = progress)
+  
+  # Calculate distance matrix
+  df_distance_matrix <- foreach(fov = 1:length(unique_regions), .packages = c("tidyverse"), .combine = "rbind", .options.snow = opts)%dopar%{
+    # Subset larger dataframe by region
+    df_point_subset <- df_input %>%
+      dplyr::filter(!!as.symbol(region_col) == unique_regions[fov])
+    
+    subset_anchor_cells = which(df_point_subset[[anchor_col]] == TRUE)
+    
+    # Check to make sure anchor cells are present
+    if (length(subset_anchor_cells) > 0){ # anchor cells are present
+      # Calculate df_anchor
+      df_anchor = do.call(rbind, lapply(1:length(subset_anchor_cells), function(i){
+        new_x = df_point_subset[[x_col]] - as.double(df_point_subset[subset_anchor_cells[i],][x_col])
+        new_y = df_point_subset[[y_col]] - as.double(df_point_subset[subset_anchor_cells[i],][y_col])
+        # Calculate radius around cells
+        dist_from_anchor = spatstat.geom::crossdist(new_x, new_y, 0, 0, squared = F)
+        
+        # Threshold anchor cells to keep
+        if(keep_anchor == FALSE){
+          # Don't include anchor cells in downstream analysis
+          cells_to_keep = which(dist_from_anchor <= distance_threshold & dist_from_anchor != 0)
+        } else {
+          # Include anchor cell
+          cells_to_keep = which(dist_from_anchor <= distance_threshold)
+        }
+        kept_cells = sort(dist_from_anchor[cells_to_keep],
+                          decreasing = FALSE,
+                          index.return = TRUE)
+        cell_id = df_point_subset[subset_anchor_cells[i],][[id_col]] # Anchor cell ID
+        
+        if(length(kept_cells$x) > 0){
+          # make sure there are kept cells
+          df_anchor_marker = data.frame(anchor_cell_id = cell_id,
+                                        anchor_cell_type = df_point_subset[which(df_point_subset[[id_col]] == cell_id),][celltype_col],
+                                        kept_cell_id = df_point_subset[cells_to_keep[kept_cells$ix], 1],
+                                        kept_cell_distance = dist_from_anchor[cells_to_keep[kept_cells$ix]],
+                                        row.names = NULL)
+          colnames(df_anchor_marker) <- c("anchor_cell_id", "anchor_cell_type", "kept_cell_id", "kept_cell_distance")
+          df_anchor_marker <- df_anchor_marker %>%
+            # Join kept cell marker expressions
+            left_join(df_point_subset, by = c("kept_cell_id" = id_col)) %>%
+            # Convert from pixel to um
+            mutate(kept_cell_distance = kept_cell_distance * um_pixel)
+          
+          # Append bin information to distances
+          df_anchor_marker$bin = sapply(1:nrow(df_anchor_marker), function(x){
+            dist = df_anchor_marker$kept_cell_distance[x]
+            bin_num = sapply(dist, function(dist){
+              ind = with(bin_conversion, which(dist >= bin_radius_min & dist < bin_radius_max))
+              bin = bin_conversion$bin_num[ind]
+              return(bin)
+            })
+          })
+          df_anchor_marker$bin <- as.numeric(df_anchor_marker$bin)
+          # assign cells at r_max to highest bin
+          df_anchor_marker$bin[is.na(df_anchor_marker$bin)] <- max(df_anchor_marker$bin, na.rm = TRUE)
+          
+          
+          # calculate marker summaries
+          if(split_celltype == TRUE){
+            marker_summary <- df_anchor_marker %>%
+              gather(key = "marker", value = "expr", colnames(df_input[,columns_to_use])) %>%
+              # Get total number of cells present in bin and the total expression in bin
+              group_by(anchor_cell_id, anchor_cell_type, bin, !!as.symbol(celltype_col), !!as.symbol(region_col), marker) %>%
+              summarize(cell_counts = n(),
+                        sum_expr = sum(expr, na.rm = TRUE)) %>%
+              ungroup() %>%
+              # Append bin areas
+              left_join(bin_conversion %>% 
+                          select(bin_num, bin_area),  by = c("bin" = "bin_num")) %>%
+              mutate(normalized = (sum_expr/cell_counts)/bin_area) %>%
+              select(-cell_counts, -sum_expr, -bin_area) %>%
+              spread(key = marker, value = normalized, fill = 0)
+          }
+          if(split_celltype == FALSE){
+            marker_summary = df_anchor_marker %>%
+              gather(key = "marker", value = "expr", colnames(df_input[,columns_to_use])) %>%
+              group_by(anchor_cell_id, anchor_cell_type, bin, !!as.symbol(region_col), marker) %>%
+              summarize(cell_counts = n(), 
+                        sum_expr = sum(expr, na.rm = TRUE),
+                        mean_expr = mean(expr, na.rm = TRUE)) %>%
+              ungroup() %>%
+              # reorganize output table
+              gather(key = "metric", value = "value", cell_counts:mean_expr) %>%
+              spread(key = "marker", value = "value") 
+          }
+          
+        } else {
+          marker_summary = data.frame()
+        }
+        return(marker_summary)
+      }))
+    } else { # no anchor cells present
+      df_anchor = data.frame()
+    }
+    return(df_anchor)
+  }
+  
+  close(pb)
+  stopCluster(cl)
+  # End information
+  end_time <- Sys.time()
+  cat(paste0("Completed distance matrix calculations: ", end_time, "\n"))
+  cat(paste0("Elapsed time: ", end_time - start_time, "\n"))
+  
+  return(df_distance_matrix)
+}
+
+```
+
+```{r}
+## add dummy global locations
+pro3 = pro2
+pro3['global_x'] = 0
+pro3['global_y'] = 0
+
+i = 0
+fovlist = unique(pro3['TMA_FOV_RNA'])
+for (fov in fovlist[[1]]){
+  #print(fov)
+  #print(i)
+  pro3[pro3['TMA_FOV_RNA'] == fov,'global_x']  = 10000*i + pro3[pro3['TMA_FOV_RNA'] == fov,'X_cent']
+  pro3[pro3['TMA_FOV_RNA'] == fov,'global_y']  = 10000*i + pro3[pro3['TMA_FOV_RNA'] == fov,'Y_cent']
+  i = i + 1
+}
+    
+##
+pro3$data_index = c(1:nrow(pro3))
+cc2use = pro3[,c('X_cent', 'Y_cent', 'TMA_FOV_RNA', 'phenoShort', 'MS', 'data_index')]
+cc2use['TMA_FOV_RNA-group'] = paste(cc2use$TMA_FOV_RNA, cc2use$MS, sep="-")
+```
+
+
+```{r}
+## start the anchor production
+library(dplyr)
+library(tidyverse)
+outputdir = "temp" # not used
+id_col = "data_index"
+x_col = "X_cent" # x pos
+y_col = "Y_cent" # y pos
+celltype_col = "phenoShort" # annotation
+region_col = "TMA_FOV_RNA2" # unique region specifing which core
+split_celltype = FALSE
+keep_anchor = FALSE
+distance_threshold = 1024 # codex 20x 264 pixels == 100um
+um_pixel = 1000/distance_threshold
+bins = 10 # radiu 100um seperate by 6 parts
+num_cores = 10
+
+## some addtional radius functions
+#r_max = distance_threshold * um_pixel
+#bin_area = 3.14/bins*(r_max)^2
+#bin_conversion = data.frame(bin_num = seq(1, bins, 1)) %>%
+#  # Get bin radii
+#  mutate(bin_radius_min = (bin_num-1)*r_max/bins,
+#         bin_radius_max = (bin_num)*r_max/bins) %>%
+#  # Calculate area of each bin
+#  mutate(bin_area = 3.14*(bin_radius_max^2 - bin_radius_min^2))
+##
+```
+
+
+```{r}
+
+## This analysis need one hot style cell type clustering result (annotation) in the matrix
+library(data.table)
+library(mltools)
+
+cc2use2 = subset(cc2use, !is.na(cc2use$phenoShort)) # exclude NA cell types
+cc2use2_onehot = cc2use2 %>% mutate(value = 1)  %>% spread(phenoShort , value,  fill = 0 ) 
+cc2use2_onehot$phenoShort = cc2use2$phenoShort # resume the column disregared during one hot
+cc2use2_onehot$TMA_FOV_RNA2 = as.numeric(factor(cc2use2_onehot$TMA_FOV_RNA))
+#cc2use2_onehot = as.tibble(cc2use2_onehot)
+#cc2use2_onehot = codex_allCelltypes_update_onehot[,use]
+# start the process
+df_master_clean <- cc2use2_onehot %>% arrange(TMA_FOV_RNA2) # codex all cells with c1q clustering info
+df_master_clean$rowid = as.numeric(rownames(df_master_clean))
+df_master_clean$target  = 'MMR'
+df_master_clean$target[df_master_clean$MS == '3'] = 'p53'
+df_master_clean$target[df_master_clean$MS == '4'] = 'NSMP' # turn c1q annotation into NA/TRUE/FALSE
+#########
+#write.csv(df_master_clean, "/home/bkzhu/SNE-multi/figure_rcode/covid/test.csv") # save for repeat use
+```
+
+
+```{r}
+###
+anchor_col = "target"
+#df_master_clean <- read_csv("/home/bkzhu/SNE-multi/figure_rcode/covid/test.csv")
+df_input <- df_master_clean
+df_input = subset(df_input,!(df_input$target == 'MMR' | df_input$target == 'NSMP')) # get rid of low and NA macrophage
+columns_to_use = colnames(df_input)[7:25] # using cell type columns one hot columns
+df_input2 = as.tibble(df_input)
+## actual function
+H = get_distance_matrix(df_input = df_input2,
+                        id_col = id_col, x_col = x_col, y_col = y_col, celltype_col = celltype_col, 
+                        columns_to_use = columns_to_use,
+                        anchor_col = anchor_col, region_col = region_col, split_celltype = split_celltype,
+                        keep_anchor = keep_anchor, distance_threshold = distance_threshold, bins = bins, 
+                        num_cores = num_cores,
+                        um_pixel = um_pixel)
+
+```
+
+
+```{r}
+# scale values by cell numbers
+all_target_columns = colnames(H)[6:23] # only take the cell type info
+cell_counts = rowSums(H[,all_target_columns])
+H[,all_target_columns] = H[,all_target_columns] / cell_counts
+
+######
+## now calculate the anchor plot for c1q low macrophages
+# reverse the anchors this time
+df_master_clean <- read_csv("/home/bkzhu/SNE-multi/figure_rcode/covid/test.csv")
+df_master_clean_reverse <- df_master_clean
+df_master_clean_reverse[,anchor_col]=!df_master_clean_reverse[,anchor_col]
+df_master_clean_reverse[,anchor_col][is.na(df_master_clean_reverse[,anchor_col])] <- FALSE
+df_input <- df_master_clean_reverse
+df_input = subset(df_input,!(df_input$comp_clust == FALSE & df_input$cluster.term.x == "Macrophage")) # get rid of high and NA macrophage
+
+columns_to_use = colnames(df_input)[8:25] # using cell type columns one hot columns
+df_input = as.tibble(df_input)
+
+L = get_distance_matrix(df_input = df_input,
+                        id_col = id_col, x_col = x_col, y_col = y_col, celltype_col = celltype_col, 
+                        columns_to_use = columns_to_use,
+                        anchor_col = anchor_col, region_col = region_col, split_celltype = split_celltype,
+                        keep_anchor = keep_anchor, distance_threshold = distance_threshold, bins = bins, 
+                        num_cores = num_cores,
+                        um_pixel = um_pixel)
+cell_counts = rowSums(L[,columns_to_use])
+L[,all_target_columns] = L[,all_target_columns] / cell_counts
+
+###### not anchor targets input
+# Get celltype column names
+
+## note do not load plyr here since code not specified function via dplyr::
+celltype_columns = 8:25 # same only look at cell type information
+celltype_columns = colnames(df_input[,celltype_columns])
+celltypes_summaryH <- H %>%
+  # select only the celltype columns
+  select(anchor_cell_id, anchor_cell_type, bin, region_new, metric, all_of(celltype_columns)) %>%
+  # Get the distribution counts of each celltype in a bin
+  dplyr::filter(metric == "sum_expr") %>%
+  gather(key = "celltype", value = "cell_count", celltype_columns) %>%
+  # Append bin data
+  left_join(bin_conversion %>%
+              select(bin_num, bin_area), by = c("bin" = "bin_num")) %>%
+  mutate(cell_density = cell_count/1) %>% # 1 was binarea for cell density version, changed 0617
+  select(-cell_count, -bin_area) %>%
+  # Get statistics for each celltype and bin
+  group_by(anchor_cell_type, bin , celltype) %>%
+  dplyr::summarize(avg = mean(cell_density, na.rm = TRUE),
+            std_dev = sd(cell_density, na.rm = TRUE),
+            count = n()) %>%
+  ungroup() %>%
+  # Calculate standard error and confidence intervals
+  mutate(se = std_dev/sqrt(count),
+         lower_ci = avg - qt(1 - ((1 - 0.95)/2), count - 1) * se,
+         upper_ci = avg + qt(1 - ((1 - 0.95)/2), count - 1) * se) %>%
+  ungroup()
+
+celltypes_summaryL <- L %>%
+  # select only the celltype columns
+  select(anchor_cell_id, anchor_cell_type, bin, region_new, metric, all_of(celltype_columns)) %>%
+  # Get the distribution counts of each celltype in a bin
+  dplyr::filter(metric == "sum_expr") %>%
+  gather(key = "celltype", value = "cell_count", celltype_columns) %>%
+  # Append bin data
+  left_join(bin_conversion %>%
+              select(bin_num, bin_area), by = c("bin" = "bin_num")) %>%
+  mutate(cell_density = cell_count/1) %>% # 1 was binarea for cell density version, changed 0617
+  select(-cell_count, -bin_area) %>%
+  # Get statistics for each celltype and bin
+  group_by(anchor_cell_type, bin , celltype) %>%
+  dplyr::summarize(avg = mean(cell_density, na.rm = TRUE),
+            std_dev = sd(cell_density, na.rm = TRUE),
+            count = n()) %>%
+  ungroup() %>%
+  # Calculate standard error and confidence intervals
+  mutate(se = std_dev/sqrt(count),
+         lower_ci = avg - qt(1 - ((1 - 0.95)/2), count - 1) * se,
+         upper_ci = avg + qt(1 - ((1 - 0.95)/2), count - 1) * se) %>%
+  ungroup()
+
+#######
+celltypes_summaryH$group=anchor_col
+celltypes_summaryL$group=paste0("No_",anchor_col)
+HL_sum=rbind(celltypes_summaryH,celltypes_summaryL)
+###### ploting
+HL_sum_sub = subset(HL_sum,HL_sum$celltype == "Macrophage")
+
+## ggplot production
+p = ggplot(data = HL_sum_sub,
+       mapping = aes(x = factor(bin), color = group, group = group)) +
+  geom_line(mapping = aes(y = avg)) +
+  geom_ribbon(mapping = aes( y = avg, ymin = lower_ci, ymax = upper_ci, fill = group),
+              alpha = 0.2, linetype = "dashed") +
+  theme_bw() + ggtitle("complement subcluster macrophages to macrophages")
+
+
+```
+
+
+
+
+
+
