@@ -1,13 +1,13 @@
 # UCS CosMx Spatial Manuscript — Analysis Code
 
 Code accompanying the manuscript:  
-**"[Title TBD]"** — *[Journal TBD]* — [Preprint link TBD]
+**"The Tumor-Immune Spatial Organization of Uterine Carcinosarcoma is Shaped by Molecular Subtype"** — *[Journal TBD]* — [Preprint link TBD]
 
 ---
 
 ## Data
 
-Processed data files required to run this code are deposited on Zenodo: [DOI TBD]
+Processed data files required to run this code are deposited on Zenodo: [10.5281/zenodo.19828316] (currently not public).
 
 Place all downloaded data files in a `data/` folder at the same level as the figure folders (`code_organize/data/`).
 
