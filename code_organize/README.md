@@ -1,7 +1,7 @@
 # UCS CosMx Spatial Manuscript — Analysis Code
 
 Code accompanying the manuscript:  
-**"[Title TBD]"** — *[Journal TBD]* — [Preprint link TBD]
+**"The Tumor-Immune Spatial Organization of Uterine Carcinosarcoma is Shaped by Molecular Subtype"**
 
 ---
 
