@@ -7,7 +7,7 @@ Code accompanying the manuscript:
 
 ## Data
 
-Processed data files required to run this code are deposited on Zenodo: [10.5281/zenodo.19828316] (currently not public).
+Processed data files required to run this code are deposited on Zenodo: [[10.5281/zenodo.19828316](https://zenodo.org/records/19828316)] (currently not public).
 
 Place all downloaded data files in a `data/` folder at the same level as the figure folders (`code_organize/data/`).
 
